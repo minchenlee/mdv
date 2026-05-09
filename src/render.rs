@@ -2,7 +2,7 @@ use crate::app::Message;
 use crate::ast::{Block, Inline, ListItem};
 use crate::theme::{Palette, Typography};
 use iced::widget::{container, image as image_widget, rich_text, row, span, text, Column, Space};
-use iced::{Color, Element, Length, Padding};
+use iced::{Element, Length, Padding};
 
 pub fn render<'a>(blocks: &'a [Block], pal: &Palette, typ: &Typography) -> Element<'a, Message> {
     let mut col = Column::new().spacing(12);
@@ -109,9 +109,40 @@ struct Style {
     italic: bool,
     bold: bool,
     strike: bool,
-    code: bool,
     link: bool,
-    color: Option<Color>,
+}
+
+fn styled_span<'a>(
+    text_str: &'a str,
+    pal: &Palette,
+    size: f32,
+    st: Style,
+    monospace: bool,
+) -> RtSpan<'a> {
+    let mut font = if monospace {
+        iced::Font::MONOSPACE
+    } else {
+        iced::Font::DEFAULT
+    };
+    if st.italic {
+        font.style = iced::font::Style::Italic;
+    }
+    if st.bold {
+        font.weight = iced::font::Weight::Bold;
+    }
+    let mut s = span(text_str).size(size).font(font);
+    if st.strike {
+        s = s.strikethrough(true);
+    }
+    if monospace {
+        s = s.background(pal.code_bg);
+    }
+    if st.link {
+        s = s.color(pal.accent).underline(true);
+    } else {
+        s = s.color(pal.fg);
+    }
+    s
 }
 
 fn push_span<'a>(
@@ -122,45 +153,8 @@ fn push_span<'a>(
     st: Style,
 ) {
     match i {
-        Inline::Text(t) => {
-            let mut s = span(t.as_str()).size(size);
-            if st.italic {
-                s = s.font(iced::Font {
-                    style: iced::font::Style::Italic,
-                    ..iced::Font::DEFAULT
-                });
-            }
-            if st.bold {
-                s = s.font(iced::Font {
-                    weight: iced::font::Weight::Bold,
-                    ..iced::Font::DEFAULT
-                });
-            }
-            if st.strike {
-                s = s.strikethrough(true);
-            }
-            if st.code {
-                s = s.font(iced::Font::MONOSPACE).background(pal.code_bg);
-            }
-            if st.link {
-                s = s.color(pal.accent).underline(true);
-            } else if let Some(c) = st.color {
-                s = s.color(c);
-            } else {
-                s = s.color(pal.fg);
-            }
-            out.push(s);
-        }
-        Inline::Code(t) => {
-            let mut child = st;
-            child.code = true;
-            // Use static text by leaking? No — use Inline::Text path with original string borrow.
-            // We need 'a lifetime; clone and convert via owned String requires leak. Instead build span directly.
-            let mut s = span(t.as_str()).size(size).font(iced::Font::MONOSPACE).background(pal.code_bg);
-            if child.strike { s = s.strikethrough(true); }
-            if child.link { s = s.color(pal.accent).underline(true); } else { s = s.color(pal.fg); }
-            out.push(s);
-        }
+        Inline::Text(t) => out.push(styled_span(t.as_str(), pal, size, st, false)),
+        Inline::Code(t) => out.push(styled_span(t.as_str(), pal, size, st, true)),
         Inline::Emph(c) => {
             for x in c {
                 let mut child = st;
