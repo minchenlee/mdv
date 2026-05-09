@@ -5,5 +5,6 @@ fn main() -> iced::Result {
     let initial: Option<PathBuf> = std::env::args().nth(1).map(PathBuf::from);
     iced::application(App::title, App::update, App::view)
         .theme(App::theme)
+        .subscription(App::subscription)
         .run_with(move || App::new(initial.clone()))
 }

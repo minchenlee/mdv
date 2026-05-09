@@ -78,10 +78,11 @@ impl App {
                 None => Message::Noop,
             }),
             Message::FileLoaded(Ok((path, src))) => {
-                self.file = Some(path);
+                crate::recent::add(&path);
                 self.ast = parser::parse(&src);
                 self.source = src;
                 self.error = None;
+                self.file = Some(path);
                 Task::none()
             }
             Message::FileLoaded(Err(e)) => {
@@ -99,6 +100,15 @@ impl App {
             }
             Message::Noop => Task::none(),
         }
+    }
+
+    pub fn subscription(&self) -> iced::Subscription<Message> {
+        iced::event::listen_with(|ev, _status, _id| match ev {
+            iced::Event::Window(iced::window::Event::FileDropped(path)) => {
+                Some(Message::Open(path))
+            }
+            _ => None,
+        })
     }
 
     pub fn view(&self) -> Element<'_, Message> {
