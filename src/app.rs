@@ -235,9 +235,32 @@ impl App {
         .spacing(8);
 
         let body: Element<'_, Message> = if let Some(err) = &self.error {
-            text(format!("Error: {err}")).into()
+            container(
+                column![
+                    text("Couldn't open file").size(20).color(self.palette.fg),
+                    text(err.clone()).color(self.palette.muted),
+                    button("Open another").on_press(Message::OpenDialog),
+                ]
+                .spacing(12)
+                .padding(24),
+            )
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
         } else if self.file.is_none() {
-            text("Drop a .md file or pass one on the command line").into()
+            container(
+                column![
+                    text("mdv").size(28).color(self.palette.fg),
+                    text("Drop a .md file or pick one to begin").color(self.palette.muted),
+                    button("Open File…").on_press(Message::OpenDialog),
+                ]
+                .spacing(12)
+                .padding(48)
+                .align_x(iced::Alignment::Center),
+            )
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
         } else {
             crate::render::render(&self.ast, &self.palette, &self.typography)
         };
