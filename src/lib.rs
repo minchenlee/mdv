@@ -1,9 +1,12 @@
 pub mod app;
 pub mod ast;
 pub mod highlight;
+pub mod icon;
 pub mod parser;
+pub mod picker;
 pub mod recent;
 pub mod render;
 pub mod search;
 pub mod theme;
+pub mod tree;
 pub mod watch;

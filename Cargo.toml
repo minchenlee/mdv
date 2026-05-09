@@ -11,7 +11,6 @@ iced = { version = "0.13", features = ["tokio", "image", "advanced", "svg"] }
 pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
 notify = "7"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
-rfd = "0.15"
 open = "5"
 arboard = "3"
 dirs = "5"

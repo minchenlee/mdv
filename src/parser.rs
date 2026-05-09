@@ -2,6 +2,7 @@ use crate::ast::{Block, Inline, ListItem};
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 pub fn parse(src: &str) -> Vec<Block> {
+    let src = strip_frontmatter(src);
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_TABLES);
     opts.insert(Options::ENABLE_STRIKETHROUGH);
@@ -180,6 +181,25 @@ impl ParseState {
             _ => self.blocks.push(b),
         }
     }
+}
+
+fn strip_frontmatter(src: &str) -> &str {
+    let trimmed = src.trim_start_matches('\u{feff}');
+    if !trimmed.starts_with("---") {
+        return src;
+    }
+    let after = &trimmed[3..];
+    let rest = after.strip_prefix("\r\n").or_else(|| after.strip_prefix('\n'));
+    let Some(rest) = rest else { return src };
+    let mut idx = 0;
+    for line in rest.split_inclusive('\n') {
+        let l = line.trim_end_matches(['\r', '\n']);
+        if l == "---" || l == "..." {
+            return &rest[idx + line.len()..];
+        }
+        idx += line.len();
+    }
+    src
 }
 
 fn heading_level(l: HeadingLevel) -> u8 {
