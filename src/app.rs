@@ -13,6 +13,9 @@ pub enum Message {
     FileChanged(PathBuf),
     OpenLink(String),
     ToggleTheme,
+    ScrollBy(f32),
+    ScrollToTop,
+    ScrollToBottom,
     Noop,
 }
 
@@ -42,6 +45,10 @@ impl Default for App {
 }
 
 impl App {
+    fn scroll_id() -> iced::widget::scrollable::Id {
+        iced::widget::scrollable::Id::new("body")
+    }
+
     pub fn new(initial: Option<PathBuf>) -> (Self, Task<Message>) {
         let app = Self::default();
         let task = match initial {
@@ -105,6 +112,18 @@ impl App {
                 self.palette = theme::resolve(self.theme_mode);
                 Task::none()
             }
+            Message::ScrollBy(dy) => iced::widget::scrollable::scroll_by(
+                Self::scroll_id(),
+                iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: dy },
+            ),
+            Message::ScrollToTop => iced::widget::scrollable::scroll_to(
+                Self::scroll_id(),
+                iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: 0.0 },
+            ),
+            Message::ScrollToBottom => iced::widget::scrollable::scroll_to(
+                Self::scroll_id(),
+                iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: f32::MAX },
+            ),
             Message::Noop => Task::none(),
         }
     }
@@ -118,7 +137,30 @@ impl App {
         });
         let watcher =
             crate::watch::watch_subscription(self.file.clone()).map(Message::FileChanged);
-        iced::Subscription::batch([dnd, watcher])
+        let keys = iced::keyboard::on_key_press(|key, mods| {
+            use iced::keyboard::{key::Named, Key};
+            match key {
+                Key::Named(Named::ArrowDown) => Some(Message::ScrollBy(40.0)),
+                Key::Named(Named::ArrowUp) => Some(Message::ScrollBy(-40.0)),
+                Key::Named(Named::Space) if mods.shift() => Some(Message::ScrollBy(-400.0)),
+                Key::Named(Named::Space) => Some(Message::ScrollBy(400.0)),
+                Key::Named(Named::PageDown) => Some(Message::ScrollBy(400.0)),
+                Key::Named(Named::PageUp) => Some(Message::ScrollBy(-400.0)),
+                Key::Named(Named::Home) => Some(Message::ScrollToTop),
+                Key::Named(Named::End) => Some(Message::ScrollToBottom),
+                Key::Character(c) => match c.as_str() {
+                    "j" => Some(Message::ScrollBy(40.0)),
+                    "k" => Some(Message::ScrollBy(-40.0)),
+                    "g" => Some(Message::ScrollToTop),
+                    "G" => Some(Message::ScrollToBottom),
+                    "t" if mods.command() || mods.control() => Some(Message::ToggleTheme),
+                    "o" if mods.command() || mods.control() => Some(Message::OpenDialog),
+                    _ => None,
+                },
+                _ => None,
+            }
+        });
+        iced::Subscription::batch([dnd, watcher, keys])
     }
 
     pub fn view(&self) -> Element<'_, Message> {
@@ -147,7 +189,8 @@ impl App {
             container(column![body].padding(24).spacing(16))
                 .width(Length::Fill)
                 .center_x(Length::Fill),
-        );
+        )
+        .id(Self::scroll_id());
 
         column![top, scrollable_body].into()
     }
