@@ -132,12 +132,12 @@ fn inline_spans<'a>(inlines: &'a [Inline], pal: &Palette, size: f32) -> Vec<RtSp
     out
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct Style {
     italic: bool,
     bold: bool,
     strike: bool,
-    link: bool,
+    link: Option<String>,
 }
 
 fn styled_span<'a>(
@@ -165,8 +165,11 @@ fn styled_span<'a>(
     if monospace {
         s = s.background(pal.code_bg);
     }
-    if st.link {
-        s = s.color(pal.accent).underline(true);
+    if let Some(url) = &st.link {
+        s = s
+            .color(pal.accent)
+            .underline(true)
+            .link(Message::OpenLink(url.clone()));
     } else {
         s = s.color(pal.fg);
     }
@@ -185,29 +188,29 @@ fn push_span<'a>(
         Inline::Code(t) => out.push(styled_span(t.as_str(), pal, size, st, true)),
         Inline::Emph(c) => {
             for x in c {
-                let mut child = st;
+                let mut child = st.clone();
                 child.italic = true;
                 push_span(x, out, pal, size, child);
             }
         }
         Inline::Strong(c) => {
             for x in c {
-                let mut child = st;
+                let mut child = st.clone();
                 child.bold = true;
                 push_span(x, out, pal, size, child);
             }
         }
         Inline::Strike(c) => {
             for x in c {
-                let mut child = st;
+                let mut child = st.clone();
                 child.strike = true;
                 push_span(x, out, pal, size, child);
             }
         }
-        Inline::Link { children, .. } => {
+        Inline::Link { url, children } => {
             for x in children {
-                let mut child = st;
-                child.link = true;
+                let mut child = st.clone();
+                child.link = Some(url.clone());
                 push_span(x, out, pal, size, child);
             }
         }

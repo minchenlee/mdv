@@ -11,6 +11,7 @@ pub enum Message {
     OpenDialog,
     FileLoaded(Result<(PathBuf, String), String>),
     FileChanged(PathBuf),
+    OpenLink(String),
     ToggleTheme,
     Noop,
 }
@@ -87,6 +88,10 @@ impl App {
                 Task::none()
             }
             Message::FileChanged(p) => Task::perform(load_file(p), Message::FileLoaded),
+            Message::OpenLink(url) => {
+                let _ = open::that_detached(&url);
+                Task::none()
+            }
             Message::FileLoaded(Err(e)) => {
                 self.error = Some(e);
                 Task::none()
