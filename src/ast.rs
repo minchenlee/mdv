@@ -1,0 +1,50 @@
+use std::ops::Range;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Block {
+    Heading { level: u8, id: String, inlines: Vec<Inline> },
+    Paragraph(Vec<Inline>),
+    CodeBlock { lang: Option<String>, code: String, spans: Vec<HlSpan> },
+    Blockquote(Vec<Block>),
+    List { ordered: bool, items: Vec<ListItem> },
+    Table { headers: Vec<Vec<Inline>>, rows: Vec<Vec<Vec<Inline>>> },
+    Image { url: String, alt: String },
+    Rule,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Inline {
+    Text(String),
+    Code(String),
+    Emph(Vec<Inline>),
+    Strong(Vec<Inline>),
+    Strike(Vec<Inline>),
+    Link { url: String, children: Vec<Inline> },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ListItem {
+    pub task: Option<bool>,
+    pub blocks: Vec<Block>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HlSpan {
+    pub range: Range<usize>,
+    pub style: HlStyle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HlStyle {
+    Plain,
+    Keyword,
+    Type,
+    Function,
+    String,
+    Number,
+    Comment,
+    Operator,
+    Constant,
+    Variable,
+    Punctuation,
+}
