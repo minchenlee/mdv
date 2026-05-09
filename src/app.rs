@@ -1,7 +1,7 @@
 use crate::ast::Block;
 use crate::parser;
 use crate::theme::{self, Palette, ThemeMode, Typography};
-use iced::widget::{button, column, container, row as irow, scrollable, text, Space};
+use iced::widget::{button, column, container, row as irow, scrollable, text, text_input, Space};
 use iced::{Element, Length, Task, Theme};
 use std::path::PathBuf;
 
@@ -16,6 +16,11 @@ pub enum Message {
     ScrollBy(f32),
     ScrollToTop,
     ScrollToBottom,
+    ToggleSearch,
+    QueryChanged(String),
+    NextMatch,
+    PrevMatch,
+    SearchFocused(bool),
     Noop,
 }
 
@@ -27,6 +32,11 @@ pub struct App {
     pub palette: Palette,
     pub typography: Typography,
     pub error: Option<String>,
+    pub query: String,
+    pub matches: Vec<usize>,
+    pub match_idx: usize,
+    pub search_open: bool,
+    pub search_focused: bool,
 }
 
 impl Default for App {
@@ -40,6 +50,11 @@ impl Default for App {
             palette: theme::resolve(mode),
             typography: Typography::DEFAULT,
             error: None,
+            query: String::new(),
+            matches: Vec::new(),
+            match_idx: 0,
+            search_open: false,
+            search_focused: false,
         }
     }
 }
@@ -124,6 +139,39 @@ impl App {
                 Self::scroll_id(),
                 iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: f32::MAX },
             ),
+            Message::ToggleSearch => {
+                self.search_open = !self.search_open;
+                self.search_focused = self.search_open;
+                if !self.search_open {
+                    self.query.clear();
+                    self.matches.clear();
+                    self.match_idx = 0;
+                }
+                Task::none()
+            }
+            Message::QueryChanged(q) => {
+                self.matches = crate::search::find_all(&self.source, &q);
+                self.match_idx = 0;
+                self.query = q;
+                Task::none()
+            }
+            Message::NextMatch => {
+                if !self.matches.is_empty() {
+                    self.match_idx = (self.match_idx + 1) % self.matches.len();
+                }
+                Task::none()
+            }
+            Message::PrevMatch => {
+                if !self.matches.is_empty() {
+                    self.match_idx =
+                        (self.match_idx + self.matches.len() - 1) % self.matches.len();
+                }
+                Task::none()
+            }
+            Message::SearchFocused(b) => {
+                self.search_focused = b;
+                Task::none()
+            }
             Message::Noop => Task::none(),
         }
     }
@@ -137,9 +185,25 @@ impl App {
         });
         let watcher =
             crate::watch::watch_subscription(self.file.clone()).map(Message::FileChanged);
-        let keys = iced::keyboard::on_key_press(|key, mods| {
-            use iced::keyboard::{key::Named, Key};
-            match key {
+        let focused = self.search_focused;
+        let keys = iced::event::listen().with(focused).map(|(focused, ev)| {
+            use iced::keyboard::{key::Named, Event as KEv, Key};
+            let (key, mods) = match ev {
+                iced::Event::Keyboard(KEv::KeyPressed { key, modifiers, .. }) => (key, modifiers),
+                _ => return Message::Noop,
+            };
+            if let Key::Character(c) = &key {
+                if c.as_str() == "f" && (mods.command() || mods.control()) {
+                    return Message::ToggleSearch;
+                }
+            }
+            if matches!(&key, Key::Named(Named::Escape)) && focused {
+                return Message::ToggleSearch;
+            }
+            if focused {
+                return Message::Noop;
+            }
+            let m: Option<Message> = match key {
                 Key::Named(Named::ArrowDown) => Some(Message::ScrollBy(40.0)),
                 Key::Named(Named::ArrowUp) => Some(Message::ScrollBy(-40.0)),
                 Key::Named(Named::Space) if mods.shift() => Some(Message::ScrollBy(-400.0)),
@@ -158,7 +222,8 @@ impl App {
                     _ => None,
                 },
                 _ => None,
-            }
+            };
+            m.unwrap_or(Message::Noop)
         });
         iced::Subscription::batch([dnd, watcher, keys])
     }
@@ -192,7 +257,29 @@ impl App {
         )
         .id(Self::scroll_id());
 
-        column![top, scrollable_body].into()
+        let search_bar: Element<'_, Message> = if self.search_open {
+            let counter = if self.matches.is_empty() {
+                "0/0".to_string()
+            } else {
+                format!("{}/{}", self.match_idx + 1, self.matches.len())
+            };
+            irow![
+                text_input("Find…", &self.query)
+                    .on_input(Message::QueryChanged)
+                    .on_submit(Message::NextMatch)
+                    .width(Length::Fill),
+                text(counter).color(self.palette.muted),
+                button("◀").on_press(Message::PrevMatch),
+                button("▶").on_press(Message::NextMatch),
+            ]
+            .padding(8)
+            .spacing(8)
+            .into()
+        } else {
+            Space::with_height(0).into()
+        };
+
+        column![top, search_bar, scrollable_body].into()
     }
 }
 
