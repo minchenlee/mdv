@@ -26,8 +26,10 @@ pub fn render<'a>(
         };
         col = col.push(render_block(b, pal, typ, &hl.query, local));
     }
+    // Reading column cap: 780px (mdv design system READING_MAX, render.rs).
+    let _ = typ.measure_ch;
     container(col)
-        .max_width((typ.measure_ch as f32) * (typ.body_size * 0.55))
+        .max_width(780.0)
         .into()
 }
 
@@ -461,14 +463,15 @@ fn render_table<'a>(
 fn style_color(s: crate::ast::HlStyle, pal: &Palette) -> iced::Color {
     use crate::ast::HlStyle::*;
     match s {
-        Keyword => iced::Color::from_rgb(0.78, 0.36, 0.55),
-        Type => iced::Color::from_rgb(0.36, 0.65, 0.78),
-        Function => iced::Color::from_rgb(0.40, 0.55, 0.85),
-        String => iced::Color::from_rgb(0.42, 0.65, 0.42),
-        Number => iced::Color::from_rgb(0.78, 0.55, 0.30),
+        // Universal hl palette (mdv design system: --hl-*)
+        Keyword => iced::Color::from_rgb(199.0 / 255.0, 92.0 / 255.0, 140.0 / 255.0),  // #c75c8c
+        Type => iced::Color::from_rgb(92.0 / 255.0, 166.0 / 255.0, 199.0 / 255.0),     // #5ca6c7
+        Function => iced::Color::from_rgb(103.0 / 255.0, 140.0 / 255.0, 217.0 / 255.0),// #678cd9
+        String => iced::Color::from_rgb(107.0 / 255.0, 166.0 / 255.0, 107.0 / 255.0),  // #6ba66b
+        Number => iced::Color::from_rgb(199.0 / 255.0, 140.0 / 255.0, 77.0 / 255.0),   // #c78c4d
         Comment => pal.muted,
         Operator => pal.fg,
-        Constant => iced::Color::from_rgb(0.78, 0.55, 0.30),
+        Constant => iced::Color::from_rgb(199.0 / 255.0, 140.0 / 255.0, 77.0 / 255.0), // #c78c4d
         Variable => pal.fg,
         Punctuation => pal.muted,
         Plain => pal.fg,

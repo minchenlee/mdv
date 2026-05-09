@@ -248,9 +248,9 @@ impl App {
     fn command_items(&self) -> Vec<(&'static str, Message)> {
         vec![
             ("Open Folder…  ⌘O", Message::OpenFolderPicker),
-            ("Find File in Workspace  ⌘P", Message::OpenFileFinder),
+            ("Find File in Workspace…  ⌘P", Message::OpenFileFinder),
             ("Toggle Sidebar  ⌘B", Message::ToggleSidebar),
-            ("Toggle Search  ⌘F", Message::ToggleSearch),
+            ("Find in Document  ⌘F", Message::ToggleSearch),
             ("Cycle Theme  ⌘T", Message::ToggleTheme),
             ("Pick Theme…", Message::OpenThemePicker),
             ("Scroll to Top  g", Message::ScrollToTop),
@@ -852,7 +852,7 @@ fn vertical_rule<'a>(pal: Palette) -> Element<'a, Message> {
 fn welcome_view<'a>(pal: Palette) -> Element<'a, Message> {
     let kbd = |label: &'static str, key: &'static str| {
         irow![
-            container(text(key).size(11).color(pal.muted))
+            container(text(key).size(11).color(pal.muted).font(iced::Font::with_name("JetBrains Mono")))
                 .padding(Padding::from([2, 7]))
                 .style(move |_| container::Style {
                     background: Some(pal.surface_alt.into()),
@@ -871,13 +871,14 @@ fn welcome_view<'a>(pal: Palette) -> Element<'a, Message> {
     centered_card(
         column![
             text("mdv").size(40).color(pal.fg),
-            text("A clean markdown viewer").size(14).color(pal.muted),
+            text("Lightweight, beautiful, native markdown viewer").size(14).color(pal.muted),
             Space::with_height(22),
-            kbd("Open folder", "⌘O"),
-            kbd("Find file", "⌘P"),
-            kbd("Command palette", "⌘K"),
-            kbd("Toggle sidebar", "⌘B"),
-            kbd("Search in document", "⌘F"),
+            kbd("Open Folder", "⌘O"),
+            kbd("Find File in Workspace", "⌘P"),
+            kbd("Command Palette", "⌘K"),
+            kbd("Toggle Sidebar", "⌘B"),
+            kbd("Find in Document", "⌘F"),
+            kbd("Cycle Theme", "⌘T"),
         ]
         .spacing(8)
         .align_x(iced::Alignment::Start)
@@ -910,7 +911,7 @@ fn search_bar_view<'a>(
                     border: Border {
                         color: pal.rule,
                         width: 1.0,
-                        radius: 8.0.into(),
+                        radius: 999.0.into(),
                     },
                     icon: pal.muted,
                     placeholder: pal.subtle,
@@ -1059,6 +1060,7 @@ fn tree_row<'a>(
     button(content)
         .padding(Padding::from([4, 8]))
         .width(Length::Fill)
+        .height(Length::Fixed(26.0))
         .style(move |_, status| {
             let bg = if is_current {
                 Some(Background::Color(pal.tree_selected_bg))
@@ -1097,7 +1099,7 @@ fn indent_guide<'a>(pal: Palette) -> Element<'a, Message> {
             }),
     )
     .width(Length::Fixed(TREE_INDENT))
-    .height(Length::Fixed(22.0))
+    .height(Length::Fixed(26.0))
     .center_x(Length::Fixed(TREE_INDENT))
     .into()
 }
@@ -1114,7 +1116,7 @@ fn primary_button<'a>(label: &'a str, pal: Palette) -> button::Button<'a, Messag
             button::Style {
                 background: Some(Background::Color(bg)),
                 text_color: pal.accent_fg,
-                border: Border { radius: 8.0.into(), ..Default::default() },
+                border: Border { radius: 999.0.into(), ..Default::default() },
                 ..Default::default()
             }
         })
@@ -1129,7 +1131,7 @@ fn ghost_lu<'a>(code: char, pal: Palette) -> button::Button<'a, Message> {
                 _ => None,
             },
             text_color: pal.muted,
-            border: Border { radius: 6.0.into(), ..Default::default() },
+            border: Border { radius: 999.0.into(), ..Default::default() },
             ..Default::default()
         })
 }
@@ -1217,6 +1219,7 @@ fn folder_picker_overlay<'a>(
                 )
                 .padding(Padding::from([7, 12]))
                 .width(Length::Fill)
+                .height(Length::Fixed(32.0))
                 .style(move |_, status| button::Style {
                     background: match (is_sel, status) {
                         (true, _) => Some(Background::Color(pal.surface_alt)),
@@ -1303,6 +1306,7 @@ fn file_finder_overlay<'a>(
             let row = button(inner)
                 .padding(Padding::from([7, 12]))
                 .width(Length::Fill)
+                .height(Length::Fixed(32.0))
                 .style(move |_, status| button::Style {
                     background: match (is_sel, status) {
                         (true, _) => Some(Background::Color(pal.surface_alt)),
@@ -1364,6 +1368,7 @@ fn command_overlay<'a>(
             let row = button(text(label).size(13).color(pal.fg))
                 .padding(Padding::from([7, 12]))
                 .width(Length::Fill)
+                .height(Length::Fixed(32.0))
                 .style(move |_, status| button::Style {
                     background: match (is_sel, status) {
                         (true, _) => Some(Background::Color(pal.surface_alt)),
@@ -1511,8 +1516,8 @@ fn overlay_frame<'a>(
                 radius: 14.0.into(),
             },
             shadow: iced::Shadow {
-                color: Color::from_rgba(0.0, 0.0, 0.0, 0.45),
-                offset: iced::Vector::new(0.0, 16.0),
+                color: Color::from_rgba(0.0, 0.0, 0.0, 0.28),
+                offset: iced::Vector::new(0.0, 14.0),
                 blur_radius: 50.0,
             },
             ..Default::default()
@@ -1521,7 +1526,7 @@ fn overlay_frame<'a>(
     let scrim = mouse_area(
         container(Space::new(Length::Fill, Length::Fill))
             .style(|_| container::Style {
-                background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.50))),
+                background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.18))),
                 ..Default::default()
             })
             .width(Length::Fill)
