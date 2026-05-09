@@ -32,26 +32,54 @@ fn render_block<'a>(b: &'a Block, pal: &Palette, typ: &Typography) -> Element<'a
             let spans = inline_spans(inlines, pal, typ.body_size);
             rich_text(spans).into()
         }
-        Block::CodeBlock { code, .. } => {
+        Block::CodeBlock { code, spans, .. } => {
             let pal_c = *pal;
-            container(
-                text(code.as_str())
-                    .size(typ.code_size)
-                    .font(iced::Font::MONOSPACE)
-                    .color(pal_c.fg),
-            )
-            .padding(Padding::from(12))
-            .style(move |_| container::Style {
-                background: Some(pal_c.code_bg.into()),
-                border: iced::Border {
-                    color: pal_c.code_border,
-                    width: 1.0,
-                    radius: 6.0.into(),
-                },
-                ..Default::default()
-            })
-            .width(Length::Fill)
-            .into()
+            let mut out: Vec<RtSpan<'a>> = Vec::new();
+            let mut cursor = 0usize;
+            for s in spans {
+                if s.range.start < cursor || s.range.end > code.len() {
+                    continue;
+                }
+                if s.range.start > cursor {
+                    let slice = &code[cursor..s.range.start];
+                    out.push(
+                        span(slice)
+                            .font(iced::Font::MONOSPACE)
+                            .size(typ.code_size)
+                            .color(pal_c.fg),
+                    );
+                }
+                let color = style_color(s.style, pal);
+                let slice = &code[s.range.start..s.range.end];
+                out.push(
+                    span(slice)
+                        .font(iced::Font::MONOSPACE)
+                        .size(typ.code_size)
+                        .color(color),
+                );
+                cursor = s.range.end;
+            }
+            if cursor < code.len() {
+                out.push(
+                    span(&code[cursor..])
+                        .font(iced::Font::MONOSPACE)
+                        .size(typ.code_size)
+                        .color(pal_c.fg),
+                );
+            }
+            container(rich_text(out))
+                .padding(Padding::from(12))
+                .style(move |_| container::Style {
+                    background: Some(pal_c.code_bg.into()),
+                    border: iced::Border {
+                        color: pal_c.code_border,
+                        width: 1.0,
+                        radius: 6.0.into(),
+                    },
+                    ..Default::default()
+                })
+                .width(Length::Fill)
+                .into()
         }
         Block::Blockquote(blocks) => {
             let inner = blocks
@@ -265,5 +293,22 @@ fn render_table<'a>(
         grid = grid.push(r);
     }
     grid.into()
+}
+
+fn style_color(s: crate::ast::HlStyle, pal: &Palette) -> iced::Color {
+    use crate::ast::HlStyle::*;
+    match s {
+        Keyword => iced::Color::from_rgb(0.78, 0.36, 0.55),
+        Type => iced::Color::from_rgb(0.36, 0.65, 0.78),
+        Function => iced::Color::from_rgb(0.40, 0.55, 0.85),
+        String => iced::Color::from_rgb(0.42, 0.65, 0.42),
+        Number => iced::Color::from_rgb(0.78, 0.55, 0.30),
+        Comment => pal.muted,
+        Operator => pal.fg,
+        Constant => iced::Color::from_rgb(0.78, 0.55, 0.30),
+        Variable => pal.fg,
+        Punctuation => pal.muted,
+        Plain => pal.fg,
+    }
 }
 
