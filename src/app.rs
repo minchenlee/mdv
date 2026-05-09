@@ -102,7 +102,7 @@ impl App {
         } else if self.file.is_none() {
             text("Drop a .md file or pass one on the command line").into()
         } else {
-            text(format!("Loaded {} blocks", self.ast.len())).into()
+            crate::render::render(&self.ast, &self.palette, &self.typography)
         };
 
         let content = column![body].padding(24).spacing(16);
