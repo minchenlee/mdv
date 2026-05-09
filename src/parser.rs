@@ -104,9 +104,8 @@ impl ParseState {
                 return;
             }
             TagEnd::TableRow => {
-                if let Some(Frame::Table { current_row, rows, in_head, headers, .. }) = self.stack.last_mut() {
-                    let row = std::mem::take(current_row);
-                    if *in_head { *headers = row; } else { rows.push(row); }
+                if let Some(Frame::Table { current_row, rows, .. }) = self.stack.last_mut() {
+                    rows.push(std::mem::take(current_row));
                 }
                 return;
             }
