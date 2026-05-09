@@ -1,0 +1,31 @@
+---
+source: tests/parser_snapshots.rs
+expression: blocks
+---
+- Heading:
+    level: 1
+    id: title
+    inlines:
+      - Text: Title
+- Paragraph:
+    - Text: "Hello "
+    - Emph:
+        - Text: world
+    - Text: ". This is "
+    - Strong:
+        - Text: strong
+    - Text: "."
+- Heading:
+    level: 2
+    id: subtitle
+    inlines:
+      - Text: Subtitle
+- Paragraph:
+    - Text: "A paragraph with "
+    - Code: inline code
+    - Text: " and a "
+    - Link:
+        url: "https://example.com"
+        children:
+          - Text: link
+    - Text: "."

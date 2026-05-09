@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub enum Block {
     Heading { level: u8, id: String, inlines: Vec<Inline> },
     Paragraph(Vec<Inline>),
@@ -12,7 +12,7 @@ pub enum Block {
     Rule,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub enum Inline {
     Text(String),
     Code(String),
@@ -22,19 +22,19 @@ pub enum Inline {
     Link { url: String, children: Vec<Inline> },
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct ListItem {
     pub task: Option<bool>,
     pub blocks: Vec<Block>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct HlSpan {
     pub range: Range<usize>,
     pub style: HlStyle,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum HlStyle {
     Plain,
     Keyword,
