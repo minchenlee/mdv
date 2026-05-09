@@ -213,6 +213,10 @@ struct HlSpan  { range: Range<usize>, style: HlStyle }
 - Cold start target: <80 ms to first paint on M-series Mac for 10 KB doc
 - Memory: <50 MB resident for typical docs
 
+### Binary Size
+
+Bundling 10 tree-sitter grammars (rust, python, js, ts, go, c, bash, json, html, md) pushes the release binary substantially over the original ~8-12 MB target. This is acceptable for v0.1 — correctness and language coverage matter more than a few extra MB on disk. Future work could feature-gate grammars behind cargo features or drop low-value ones for an MD viewer (e.g., `markdown`, `html`).
+
 ## Testing
 
 - **Unit (parser):** snapshot AST for CommonMark spec subset + GFM samples via `insta`

@@ -33,7 +33,10 @@ pub fn highlight(lang: &str, code: &str) -> Vec<HlSpan> {
             out.push(HlSpan { range: r, style });
         }
     }
-    out.sort_by_key(|s| (s.range.start, s.range.end));
+    // Innermost / most specific capture wins: shorter ranges first at any start,
+    // then earlier starts overall. The renderer's cursor walk drops anything that
+    // overlaps a span already claimed.
+    out.sort_by_key(|s| (s.range.start, s.range.end - s.range.start));
     out
 }
 
