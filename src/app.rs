@@ -20,7 +20,6 @@ pub enum Message {
     QueryChanged(String),
     NextMatch,
     PrevMatch,
-    SearchFocused(bool),
     Noop,
 }
 
@@ -36,7 +35,6 @@ pub struct App {
     pub matches: Vec<usize>,
     pub match_idx: usize,
     pub search_open: bool,
-    pub search_focused: bool,
 }
 
 impl Default for App {
@@ -54,7 +52,6 @@ impl Default for App {
             matches: Vec::new(),
             match_idx: 0,
             search_open: false,
-            search_focused: false,
         }
     }
 }
@@ -141,7 +138,6 @@ impl App {
             ),
             Message::ToggleSearch => {
                 self.search_open = !self.search_open;
-                self.search_focused = self.search_open;
                 if !self.search_open {
                     self.query.clear();
                     self.matches.clear();
@@ -168,10 +164,6 @@ impl App {
                 }
                 Task::none()
             }
-            Message::SearchFocused(b) => {
-                self.search_focused = b;
-                Task::none()
-            }
             Message::Noop => Task::none(),
         }
     }
@@ -185,7 +177,7 @@ impl App {
         });
         let watcher =
             crate::watch::watch_subscription(self.file.clone()).map(Message::FileChanged);
-        let focused = self.search_focused;
+        let focused = self.search_open;
         let keys = iced::event::listen().with(focused).map(|(focused, ev)| {
             use iced::keyboard::{key::Named, Event as KEv, Key};
             let (key, mods) = match ev {
