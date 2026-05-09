@@ -6,3 +6,10 @@ fn parses_basic_headings_and_paragraph() {
     let blocks = parse(&src);
     insta::assert_yaml_snapshot!("basic", blocks);
 }
+
+#[test]
+fn parses_gfm_constructs() {
+    let src = std::fs::read_to_string("tests/fixtures/gfm.md").unwrap();
+    let blocks = mdv::parser::parse(&src);
+    insta::assert_yaml_snapshot!("gfm", blocks);
+}

@@ -30,7 +30,7 @@ enum Frame {
     Link { url: String, children: Vec<Inline> },
     Blockquote(Vec<Block>),
     List { ordered: bool, items: Vec<ListItem> },
-    Item { task: Option<bool>, blocks: Vec<Block> },
+    Item { task: Option<bool>, blocks: Vec<Block>, loose_inlines: Vec<Inline> },
     CodeBlock { lang: Option<String>, code: String },
     Table {
         headers: Vec<Vec<Inline>>,
@@ -71,7 +71,7 @@ impl ParseState {
             Tag::Link { dest_url, .. } => self.stack.push(Frame::Link { url: dest_url.into_string(), children: Vec::new() }),
             Tag::BlockQuote(_) => self.stack.push(Frame::Blockquote(Vec::new())),
             Tag::List(start) => self.stack.push(Frame::List { ordered: start.is_some(), items: Vec::new() }),
-            Tag::Item => self.stack.push(Frame::Item { task: None, blocks: Vec::new() }),
+            Tag::Item => self.stack.push(Frame::Item { task: None, blocks: Vec::new(), loose_inlines: Vec::new() }),
             Tag::CodeBlock(kind) => {
                 let lang = match kind {
                     pulldown_cmark::CodeBlockKind::Fenced(s) if !s.is_empty() => Some(s.into_string()),
@@ -111,7 +111,8 @@ impl ParseState {
                 return;
             }
             TagEnd::TableHead => {
-                if let Some(Frame::Table { in_head, .. }) = self.stack.last_mut() {
+                if let Some(Frame::Table { in_head, current_row, headers, .. }) = self.stack.last_mut() {
+                    *headers = std::mem::take(current_row);
                     *in_head = false;
                 }
                 return;
@@ -131,7 +132,10 @@ impl ParseState {
             Frame::Link { url, children } => self.push_inline(Inline::Link { url, children }),
             Frame::Blockquote(blocks) => self.push_block(Block::Blockquote(blocks)),
             Frame::List { ordered, items } => self.push_block(Block::List { ordered, items }),
-            Frame::Item { task, blocks } => {
+            Frame::Item { task, mut blocks, loose_inlines } => {
+                if !loose_inlines.is_empty() {
+                    blocks.insert(0, Block::Paragraph(loose_inlines));
+                }
                 if let Some(Frame::List { items, .. }) = self.stack.last_mut() {
                     items.push(ListItem { task, blocks });
                 }
@@ -161,6 +165,7 @@ impl ParseState {
                 Frame::CodeBlock { code, .. } => {
                     if let Inline::Text(t) = inl { code.push_str(&t); }
                 }
+                Frame::Item { loose_inlines, .. } => loose_inlines.push(inl),
                 _ => {}
             }
         }

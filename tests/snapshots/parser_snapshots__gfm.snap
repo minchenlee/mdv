@@ -1,0 +1,60 @@
+---
+source: tests/parser_snapshots.rs
+expression: blocks
+---
+- Blockquote:
+    - Paragraph:
+        - Text: A blockquote
+        - Text: "\n"
+        - Text: with two lines.
+- List:
+    ordered: false
+    items:
+      - task: ~
+        blocks:
+          - Paragraph:
+              - Text: alpha
+      - task: ~
+        blocks:
+          - Paragraph:
+              - Text: beta
+          - List:
+              ordered: false
+              items:
+                - task: ~
+                  blocks:
+                    - Paragraph:
+                        - Text: nested
+      - task: true
+        blocks:
+          - Paragraph:
+              - Text: done
+      - task: false
+        blocks:
+          - Paragraph:
+              - Text: todo
+- List:
+    ordered: true
+    items:
+      - task: ~
+        blocks:
+          - Paragraph:
+              - Text: one
+      - task: ~
+        blocks:
+          - Paragraph:
+              - Text: two
+- CodeBlock:
+    lang: rust
+    code: "fn main() { println!(\"hi\"); }\n"
+    spans: []
+- Table:
+    headers:
+      - - Text: Col A
+      - - Text: Col B
+    rows:
+      - - - Text: "1"
+        - - Text: "2"
+      - - - Text: "3"
+        - - Text: "4"
+- Rule
