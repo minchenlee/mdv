@@ -1,13 +1,14 @@
 use crate::ast::Block;
 use crate::parser;
 use crate::theme::{self, Palette, ThemeMode, Typography};
-use iced::widget::{column, container, scrollable, text};
+use iced::widget::{button, column, container, row as irow, scrollable, text, Space};
 use iced::{Element, Length, Task, Theme};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
 pub enum Message {
     Open(PathBuf),
+    OpenDialog,
     FileLoaded(Result<(PathBuf, String), String>),
     ToggleTheme,
     Noop,
@@ -72,6 +73,10 @@ impl App {
     pub fn update(&mut self, msg: Message) -> Task<Message> {
         match msg {
             Message::Open(p) => Task::perform(load_file(p), Message::FileLoaded),
+            Message::OpenDialog => Task::perform(pick_file(), |opt| match opt {
+                Some(p) => Message::Open(p),
+                None => Message::Noop,
+            }),
             Message::FileLoaded(Ok((path, src))) => {
                 self.file = Some(path);
                 self.ast = parser::parse(&src);
@@ -97,6 +102,19 @@ impl App {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
+        let theme_label = match self.theme_mode {
+            ThemeMode::Dark => "☀",
+            _ => "🌙",
+        };
+
+        let top = irow![
+            button("Open").on_press(Message::OpenDialog),
+            Space::with_width(Length::Fill),
+            button(theme_label).on_press(Message::ToggleTheme),
+        ]
+        .padding(8)
+        .spacing(8);
+
         let body: Element<'_, Message> = if let Some(err) = &self.error {
             text(format!("Error: {err}")).into()
         } else if self.file.is_none() {
@@ -105,8 +123,13 @@ impl App {
             crate::render::render(&self.ast, &self.palette, &self.typography)
         };
 
-        let content = column![body].padding(24).spacing(16);
-        scrollable(container(content).width(Length::Fill).center_x(Length::Fill)).into()
+        let scrollable_body = scrollable(
+            container(column![body].padding(24).spacing(16))
+                .width(Length::Fill)
+                .center_x(Length::Fill),
+        );
+
+        column![top, scrollable_body].into()
     }
 }
 
@@ -114,4 +137,12 @@ async fn load_file(p: PathBuf) -> Result<(PathBuf, String), String> {
     let bytes = tokio::fs::read(&p).await.map_err(|e| e.to_string())?;
     let s = String::from_utf8_lossy(&bytes).into_owned();
     Ok((p, s))
+}
+
+async fn pick_file() -> Option<PathBuf> {
+    rfd::AsyncFileDialog::new()
+        .add_filter("Markdown", &["md", "markdown"])
+        .pick_file()
+        .await
+        .map(|h| h.path().to_path_buf())
 }
