@@ -10,6 +10,7 @@ pub enum Message {
     Open(PathBuf),
     OpenDialog,
     FileLoaded(Result<(PathBuf, String), String>),
+    FileChanged(PathBuf),
     ToggleTheme,
     Noop,
 }
@@ -85,6 +86,7 @@ impl App {
                 self.file = Some(path);
                 Task::none()
             }
+            Message::FileChanged(p) => Task::perform(load_file(p), Message::FileLoaded),
             Message::FileLoaded(Err(e)) => {
                 self.error = Some(e);
                 Task::none()
@@ -103,12 +105,15 @@ impl App {
     }
 
     pub fn subscription(&self) -> iced::Subscription<Message> {
-        iced::event::listen_with(|ev, _status, _id| match ev {
+        let dnd = iced::event::listen_with(|ev, _status, _id| match ev {
             iced::Event::Window(iced::window::Event::FileDropped(path)) => {
                 Some(Message::Open(path))
             }
             _ => None,
-        })
+        });
+        let watcher =
+            crate::watch::watch_subscription(self.file.clone()).map(Message::FileChanged);
+        iced::Subscription::batch([dnd, watcher])
     }
 
     pub fn view(&self) -> Element<'_, Message> {

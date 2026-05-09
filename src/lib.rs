@@ -4,3 +4,4 @@ pub mod parser;
 pub mod recent;
 pub mod render;
 pub mod theme;
+pub mod watch;
