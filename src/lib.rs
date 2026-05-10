@@ -1,3 +1,4 @@
+pub mod bench;
 pub mod app;
 pub mod ast;
 pub mod highlight;

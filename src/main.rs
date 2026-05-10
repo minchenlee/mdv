@@ -4,6 +4,7 @@ use std::time::Instant;
 
 fn main() -> iced::Result {
     let t0 = Instant::now();
+    mdv::bench::set_process_start(t0);
     let bench = std::env::args().any(|a| a == "--benchmark-startup");
     if bench {
         // Set before any Iced threads spawn — set_var is unsound in multi-threaded contexts.

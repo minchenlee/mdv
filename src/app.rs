@@ -715,6 +715,17 @@ impl App {
     pub fn view(&self) -> Element<'_, Message> {
         {
             use std::sync::OnceLock;
+            // Print first_view BEFORE the font-load block so the timing reflects
+            // when the window can actually paint (font load runs lazily after).
+            static BENCH: OnceLock<bool> = OnceLock::new();
+            if *BENCH.get_or_init(|| std::env::var_os("MDV_BENCH_STARTUP").is_some()) {
+                static FIRST: OnceLock<()> = OnceLock::new();
+                FIRST.get_or_init(|| {
+                    if let Some(d) = crate::bench::since_process_start() {
+                        eprintln!("startup: first_view={:?}", d);
+                    }
+                });
+            }
             // Deferred from main(): first view pays ~270ms font scan instead of blocking window paint.
             static FONTS_LOADED: OnceLock<()> = OnceLock::new();
             FONTS_LOADED.get_or_init(|| {
@@ -723,18 +734,11 @@ impl App {
                     guard.raw().db_mut().load_system_fonts();
                 }
                 if std::env::var_os("MDV_BENCH_STARTUP").is_some() {
-                    eprintln!("startup: fonts_loaded_at_first_view={:?}", std::time::Instant::now());
+                    if let Some(d) = crate::bench::since_process_start() {
+                        eprintln!("startup: fonts_loaded={:?}", d);
+                    }
                 }
             });
-            static BENCH: OnceLock<bool> = OnceLock::new();
-            if *BENCH.get_or_init(|| std::env::var_os("MDV_BENCH_STARTUP").is_some()) {
-                static FIRST: OnceLock<std::time::Instant> = OnceLock::new();
-                FIRST.get_or_init(|| {
-                    let now = std::time::Instant::now();
-                    eprintln!("startup: first_view_painted_at_monotonic={:?}", now);
-                    now
-                });
-            }
         }
         let pal = self.palette;
 

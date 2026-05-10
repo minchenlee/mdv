@@ -13,9 +13,9 @@ const PARAGRAPH_CHARS_PER_LINE: f32 = 80.0;
 
 pub fn estimate_height(b: &Block) -> f32 {
     match b {
-        Block::Heading { level, inlines, .. } => {
+        Block::Heading { level, .. } => {
+            // Headings are single-line in mdv; ignore inline length.
             HEADING_PX[((*level as usize).saturating_sub(1)).min(5)]
-                + paragraph_lines(inlines) * LINE_PX * 0.0 // headings are single-line in mdv
         }
         Block::Paragraph(inlines) => paragraph_lines(inlines) * LINE_PX,
         Block::CodeBlock { code, .. } => {
@@ -125,6 +125,39 @@ mod tests {
         let (s, e) = visible_range(&blocks, &cache, 0.0, 800.0, 0);
         assert_eq!(s, 0);
         assert_eq!(e, blocks.len());
+    }
+
+    #[test]
+    fn deep_offset_small_viewport_returns_non_empty_range() {
+        let mut blocks = Vec::new();
+        for i in 0..500 {
+            blocks.push((
+                BlockId(i),
+                Block::Paragraph(vec![Inline::Text("x".repeat(80))]),
+            ));
+        }
+        let cache = HeightCache::default();
+        // Offset far into the document, tiny viewport.
+        let (s, e) = visible_range(&blocks, &cache, 10_000.0, 50.0, 0);
+        assert!(s < blocks.len(), "start must land on a real block");
+        assert!(e > s, "end must be after start");
+        assert!(e <= blocks.len());
+    }
+
+    #[test]
+    fn offset_past_document_end_collapses_to_end() {
+        let blocks = make_paragraphs(10);
+        let cache = HeightCache::default();
+        let (s, e) = visible_range(&blocks, &cache, 1_000_000.0, 800.0, 0);
+        // Degenerate but should not panic; both indices clamp to len.
+        assert_eq!(s, blocks.len());
+        assert_eq!(e, blocks.len());
+    }
+
+    fn make_paragraphs(n: u64) -> Vec<(BlockId, Block)> {
+        (0..n)
+            .map(|i| (BlockId(i), Block::Paragraph(vec![Inline::Text("hi".into())])))
+            .collect()
     }
 
     #[test]
