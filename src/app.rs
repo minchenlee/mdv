@@ -92,7 +92,7 @@ pub struct App {
     pub overlay_viewport: Option<iced::widget::scrollable::Viewport>,
     #[allow(dead_code)]
     pub first_frame_at: Option<std::time::Instant>,
-    pub hl_cache: crate::highlight::HlCache,
+    pub(crate) hl_cache: crate::highlight::HlCache,
 }
 
 impl Default for App {
