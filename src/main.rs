@@ -1,14 +1,27 @@
 use mdv::app::App;
 use std::path::PathBuf;
+use std::time::Instant;
 
 fn main() -> iced::Result {
+    let t0 = Instant::now();
+    let bench = std::env::args().any(|a| a == "--benchmark-startup");
+
     {
         let fs = iced::advanced::graphics::text::font_system();
         if let Ok(mut guard) = fs.write() {
             guard.raw().db_mut().load_system_fonts();
         }
     }
-    let initial: Option<PathBuf> = std::env::args().nth(1).map(PathBuf::from);
+    let t_fonts = t0.elapsed();
+    if bench {
+        eprintln!("startup: fonts_loaded={:?}", t_fonts);
+    }
+
+    let initial: Option<PathBuf> = std::env::args()
+        .skip(1)
+        .find(|a| !a.starts_with("--"))
+        .map(PathBuf::from);
+
     #[cfg(target_os = "macos")]
     let platform_specific = iced::window::settings::PlatformSpecific {
         title_hidden: true,
@@ -21,6 +34,12 @@ fn main() -> iced::Result {
         platform_specific,
         ..Default::default()
     };
+
+    if bench {
+        eprintln!("startup: pre_run={:?}", t0.elapsed());
+        std::env::set_var("MDV_BENCH_STARTUP", "1");
+    }
+
     iced::application(App::title, App::update, App::view)
         .theme(App::theme)
         .subscription(App::subscription)
