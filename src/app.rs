@@ -62,6 +62,7 @@ pub enum Message {
     PrevMatch,
     TreeScrolled(iced::widget::scrollable::Viewport),
     OverlayScrolled(iced::widget::scrollable::Viewport),
+    BodyScrolled(iced::widget::scrollable::Viewport),
     Noop,
 }
 
@@ -90,6 +91,7 @@ pub struct App {
     pub picker: Option<Picker>,
     pub tree_viewport: Option<iced::widget::scrollable::Viewport>,
     pub overlay_viewport: Option<iced::widget::scrollable::Viewport>,
+    pub body_viewport: Option<iced::widget::scrollable::Viewport>,
     #[allow(dead_code)]
     pub first_frame_at: Option<std::time::Instant>,
     pub(crate) hl_cache: crate::highlight::HlCache,
@@ -124,6 +126,7 @@ impl Default for App {
             picker: None,
             tree_viewport: None,
             overlay_viewport: None,
+            body_viewport: None,
             first_frame_at: None,
             hl_cache: crate::highlight::HlCache::default(),
         }
@@ -607,6 +610,10 @@ impl App {
                 self.overlay_viewport = Some(v);
                 Task::none()
             }
+            Message::BodyScrolled(v) => {
+                self.body_viewport = Some(v);
+                Task::none()
+            }
             Message::Noop => Task::none(),
         }
     }
@@ -769,6 +776,7 @@ impl App {
         )
         .id(Self::scroll_id())
         .height(Length::Fill)
+        .on_scroll(Message::BodyScrolled)
         .direction(slim_scroll_direction())
             .style(move |_, status| sleek_scrollable_style(status, pal));
 
