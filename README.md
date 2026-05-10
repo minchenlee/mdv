@@ -8,16 +8,19 @@ Built in Rust with [Iced](https://iced.rs/). ~16 MB binary, no Electron, no Chro
 
 ## Why mdv
 
-| | mdv | Marked 2 | Glow | Obsidian | Typora |
-|---|:-:|:-:|:-:|:-:|:-:|
-| Free | ✅ | ❌ ($14) | ✅ | freemium | ❌ ($15) |
-| Open source | ✅ | ❌ | ✅ | ❌ | ❌ |
-| Native (no Electron) | ✅ | ✅ | ✅ | ❌ | partial |
-| Cross-platform GUI | ✅ | ❌ (mac only) | terminal | ✅ | ✅ |
-| Folder workspace | ✅ | ❌ | ❌ | ✅ | ❌ |
-| Read-only focus | ✅ | ✅ | ✅ | ❌ | ❌ |
+| | mdv | [Marky] | Marked 2 | Glow | Obsidian | Typora |
+|---|:-:|:-:|:-:|:-:|:-:|:-:|
+| Free | ✅ | ✅ | ❌ ($14) | ✅ | freemium | ❌ ($15) |
+| Open source | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ |
+| Native (no webview) | ✅ | ⚠️ Tauri | ✅ | ✅ | ❌ | partial |
+| Windows support | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ |
+| macOS support | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Folder workspace | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ |
+| Read-only focus | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
 
-mdv is the only one that hits all six.
+[Marky]: https://github.com/GRVYDEV/marky
+
+**[Marky](https://github.com/GRVYDEV/marky)** is the closest peer — Tauri+Rust, same viewer-only pitch, actively maintained. mdv's edges: **Windows support** (Marky is mac+Linux only) and a **pure-Rust GUI via [Iced](https://iced.rs/)** — no embedded WebView, no Chromium, no JS runtime. The whole thing renders in native widgets.
 
 ## Features
 
