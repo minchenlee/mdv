@@ -9,4 +9,5 @@ pub mod render;
 pub mod search;
 pub mod theme;
 pub mod tree;
+pub mod virt;
 pub mod watch;
