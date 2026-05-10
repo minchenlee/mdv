@@ -5,6 +5,10 @@ use std::time::Instant;
 fn main() -> iced::Result {
     let t0 = Instant::now();
     let bench = std::env::args().any(|a| a == "--benchmark-startup");
+    if bench {
+        // Set before any Iced threads spawn — set_var is unsound in multi-threaded contexts.
+        std::env::set_var("MDV_BENCH_STARTUP", "1");
+    }
 
     {
         let fs = iced::advanced::graphics::text::font_system();
@@ -37,7 +41,6 @@ fn main() -> iced::Result {
 
     if bench {
         eprintln!("startup: pre_run={:?}", t0.elapsed());
-        std::env::set_var("MDV_BENCH_STARTUP", "1");
     }
 
     iced::application(App::title, App::update, App::view)
