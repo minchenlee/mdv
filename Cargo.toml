@@ -43,6 +43,21 @@ path = "src/main.rs"
 [dev-dependencies]
 insta = { version = "1", features = ["yaml"] }
 
+[package.metadata.packager]
+product-name = "mdv"
+identifier = "com.minchenlee.mdv"
+description = "Lightweight beautiful markdown viewer"
+authors = ["minchenlee"]
+icons = ["assets/icon.icns", "assets/icon.ico", "assets/icon.png"]
+category = "Utility"
+homepage = "https://github.com/minchenlee/mdv"
+
+[package.metadata.packager.macos]
+minimum-system-version = "10.13"
+
+[package.metadata.packager.nsis]
+installer-mode = "currentUser"
+
 [profile.release]
 opt-level = 3
 lto = "thin"
