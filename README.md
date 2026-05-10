@@ -68,6 +68,14 @@ Requires Rust 1.80+.
 | `Space` / `Shift+Space` | Page down / up |
 | `Esc` | Close overlay / search |
 
+## Performance
+
+- Cold start: window paints before system fonts finish loading
+- 1 MB / 10k-line documents parse in single-digit milliseconds
+- Hot reload re-highlights only changed code blocks
+
+See [`docs/benchmarks.md`](docs/benchmarks.md) for measured numbers and how to reproduce.
+
 ## Roadmap
 
 - [ ] Code signing (mac notarization, Windows cert)
