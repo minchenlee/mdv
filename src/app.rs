@@ -90,6 +90,8 @@ pub struct App {
     pub picker: Option<Picker>,
     pub tree_viewport: Option<iced::widget::scrollable::Viewport>,
     pub overlay_viewport: Option<iced::widget::scrollable::Viewport>,
+    #[allow(dead_code)]
+    pub first_frame_at: Option<std::time::Instant>,
 }
 
 impl Default for App {
@@ -121,6 +123,7 @@ impl Default for App {
             picker: None,
             tree_viewport: None,
             overlay_viewport: None,
+            first_frame_at: None,
         }
     }
 }
@@ -687,6 +690,15 @@ impl App {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
+        if std::env::var_os("MDV_BENCH_STARTUP").is_some() {
+            use std::sync::OnceLock;
+            static FIRST: OnceLock<std::time::Instant> = OnceLock::new();
+            FIRST.get_or_init(|| {
+                let now = std::time::Instant::now();
+                eprintln!("startup: first_view_painted_at_monotonic={:?}", now);
+                now
+            });
+        }
         let pal = self.palette;
 
         let body: Element<'_, Message> = if let Some(err) = &self.error {
