@@ -690,14 +690,17 @@ impl App {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
-        if std::env::var_os("MDV_BENCH_STARTUP").is_some() {
+        {
             use std::sync::OnceLock;
-            static FIRST: OnceLock<std::time::Instant> = OnceLock::new();
-            FIRST.get_or_init(|| {
-                let now = std::time::Instant::now();
-                eprintln!("startup: first_view_painted_at_monotonic={:?}", now);
-                now
-            });
+            static BENCH: OnceLock<bool> = OnceLock::new();
+            if *BENCH.get_or_init(|| std::env::var_os("MDV_BENCH_STARTUP").is_some()) {
+                static FIRST: OnceLock<std::time::Instant> = OnceLock::new();
+                FIRST.get_or_init(|| {
+                    let now = std::time::Instant::now();
+                    eprintln!("startup: first_view_painted_at_monotonic={:?}", now);
+                    now
+                });
+            }
         }
         let pal = self.palette;
 
