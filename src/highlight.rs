@@ -106,6 +106,41 @@ fn lang_for(name: &str) -> Option<(Language, &'static str)> {
     }
 }
 
+use std::collections::VecDeque;
+use std::hash::{DefaultHasher, Hash, Hasher};
+
+const CACHE_MAX: usize = 200;
+
+#[derive(Default)]
+pub struct HlCache {
+    map: HashMap<(String, u64), Vec<HlSpan>>,
+    order: VecDeque<(String, u64)>,
+}
+
+impl HlCache {
+    pub fn highlight(&mut self, lang: &str, code: &str) -> Vec<HlSpan> {
+        let mut h = DefaultHasher::new();
+        code.hash(&mut h);
+        let key = (lang.to_ascii_lowercase(), h.finish());
+        if let Some(v) = self.map.get(&key) {
+            return v.clone();
+        }
+        let spans = highlight(&key.0, code);
+        if self.map.len() >= CACHE_MAX {
+            if let Some(old) = self.order.pop_front() {
+                self.map.remove(&old);
+            }
+        }
+        self.order.push_back(key.clone());
+        self.map.insert(key, spans.clone());
+        spans
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+}
+
 fn capture_to_style(name: &str) -> HlStyle {
     let base = name.split('.').next().unwrap_or(name);
     match base {

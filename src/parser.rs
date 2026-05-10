@@ -141,11 +141,7 @@ impl ParseState {
                 }
             }
             Frame::CodeBlock { lang, code } => {
-                let spans = match &lang {
-                    Some(l) => crate::highlight::highlight(l, &code),
-                    None => Vec::new(),
-                };
-                self.push_block(Block::CodeBlock { lang, code, spans });
+                self.push_block(Block::CodeBlock { lang, code, spans: Vec::new() });
             }
             Frame::Table { headers, rows, .. } => {
                 self.push_block(Block::Table { headers, rows });

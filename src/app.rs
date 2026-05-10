@@ -92,6 +92,7 @@ pub struct App {
     pub overlay_viewport: Option<iced::widget::scrollable::Viewport>,
     #[allow(dead_code)]
     pub first_frame_at: Option<std::time::Instant>,
+    pub hl_cache: crate::highlight::HlCache,
 }
 
 impl Default for App {
@@ -124,6 +125,7 @@ impl Default for App {
             tree_viewport: None,
             overlay_viewport: None,
             first_frame_at: None,
+            hl_cache: crate::highlight::HlCache::default(),
         }
     }
 }
@@ -471,7 +473,15 @@ impl App {
             }
             Message::FileLoaded(Ok((path, src))) => {
                 crate::recent::add(&path);
-                self.ast = parser::parse(&src);
+                let mut parsed = parser::parse(&src);
+                for b in parsed.iter_mut() {
+                    if let Block::CodeBlock { lang: Some(l), code, spans } = b {
+                        if spans.is_empty() {
+                            *spans = self.hl_cache.highlight(l, code);
+                        }
+                    }
+                }
+                self.ast = parsed;
                 self.source = src;
                 self.error = None;
                 self.file = Some(path);
