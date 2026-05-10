@@ -1,14 +1,15 @@
 ---
 source: tests/parser_snapshots.rs
+assertion_line: 7
 expression: blocks
 ---
-- - 17112759990204506010
+- - 15964520384009149115
   - Heading:
       level: 1
       id: title
       inlines:
         - Text: Title
-- - 17122750060262874236
+- - 4243740284306721834
   - Paragraph:
       - Text: "Hello "
       - Emph:
@@ -17,13 +18,13 @@ expression: blocks
       - Strong:
           - Text: strong
       - Text: "."
-- - 7439601310080933945
+- - 3159277434310101661
   - Heading:
       level: 2
       id: subtitle
       inlines:
         - Text: Subtitle
-- - 5128398907541903576
+- - 159611225879369740
   - Paragraph:
       - Text: "A paragraph with "
       - Code: inline code

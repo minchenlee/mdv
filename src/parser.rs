@@ -14,11 +14,19 @@ pub fn parse(src: &str) -> Vec<(BlockId, Block)> {
     for ev in parser {
         state.handle(ev);
     }
-    state.blocks.into_iter().map(|b| (block_id(&b), b)).collect()
+    state
+        .blocks
+        .into_iter()
+        .enumerate()
+        .map(|(pos, b)| (block_id(pos, &b), b))
+        .collect()
 }
 
-fn block_id(b: &Block) -> BlockId {
+fn block_id(pos: usize, b: &Block) -> BlockId {
     let mut h = DefaultHasher::new();
+    // Mix position so identical adjacent blocks (e.g. two horizontal rules,
+    // duplicated paragraphs) get distinct ids — required for height/widget keying.
+    (pos as u64).hash(&mut h);
     fmt_block_for_hash(b, &mut h);
     BlockId(h.finish())
 }

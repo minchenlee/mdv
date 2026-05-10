@@ -1,14 +1,15 @@
 ---
 source: tests/parser_snapshots.rs
+assertion_line: 14
 expression: blocks
 ---
-- - 5736119312827787497
+- - 9166819041527042882
   - Blockquote:
       - Paragraph:
           - Text: A blockquote
           - Text: "\n"
           - Text: with two lines.
-- - 5066923285258152156
+- - 12826214815824769011
   - List:
       ordered: false
       items:
@@ -35,7 +36,7 @@ expression: blocks
           blocks:
             - Paragraph:
                 - Text: todo
-- - 6012734556676843350
+- - 10779190442331440252
   - List:
       ordered: true
       items:
@@ -47,12 +48,12 @@ expression: blocks
           blocks:
             - Paragraph:
                 - Text: two
-- - 5070428743641608330
+- - 9917579334201272291
   - CodeBlock:
       lang: rust
       code: "fn main() { println!(\"hi\"); }\n"
       spans: []
-- - 17808554115230246813
+- - 13757620135966815286
   - Table:
       headers:
         - - Text: Col A
@@ -62,5 +63,5 @@ expression: blocks
           - - Text: "2"
         - - - Text: "3"
           - - Text: "4"
-- - 7364705619221056123
+- - 9745303606092932007
   - Rule
