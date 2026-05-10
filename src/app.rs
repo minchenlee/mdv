@@ -692,6 +692,7 @@ impl App {
     pub fn view(&self) -> Element<'_, Message> {
         {
             use std::sync::OnceLock;
+            // Deferred from main(): first view pays ~270ms font scan instead of blocking window paint.
             static FONTS_LOADED: OnceLock<()> = OnceLock::new();
             FONTS_LOADED.get_or_init(|| {
                 let fs = iced::advanced::graphics::text::font_system();
