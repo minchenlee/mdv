@@ -692,6 +692,16 @@ impl App {
     pub fn view(&self) -> Element<'_, Message> {
         {
             use std::sync::OnceLock;
+            static FONTS_LOADED: OnceLock<()> = OnceLock::new();
+            FONTS_LOADED.get_or_init(|| {
+                let fs = iced::advanced::graphics::text::font_system();
+                if let Ok(mut guard) = fs.write() {
+                    guard.raw().db_mut().load_system_fonts();
+                }
+                if std::env::var_os("MDV_BENCH_STARTUP").is_some() {
+                    eprintln!("startup: fonts_loaded_at_first_view={:?}", std::time::Instant::now());
+                }
+            });
             static BENCH: OnceLock<bool> = OnceLock::new();
             if *BENCH.get_or_init(|| std::env::var_os("MDV_BENCH_STARTUP").is_some()) {
                 static FIRST: OnceLock<std::time::Instant> = OnceLock::new();

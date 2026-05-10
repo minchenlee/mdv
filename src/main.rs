@@ -10,17 +10,6 @@ fn main() -> iced::Result {
         std::env::set_var("MDV_BENCH_STARTUP", "1");
     }
 
-    {
-        let fs = iced::advanced::graphics::text::font_system();
-        if let Ok(mut guard) = fs.write() {
-            guard.raw().db_mut().load_system_fonts();
-        }
-    }
-    let t_fonts = t0.elapsed();
-    if bench {
-        eprintln!("startup: fonts_loaded={:?}", t_fonts);
-    }
-
     let initial: Option<PathBuf> = std::env::args()
         .skip(1)
         .find(|a| !a.starts_with("--"))
