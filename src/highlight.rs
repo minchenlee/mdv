@@ -1,9 +1,28 @@
 use crate::ast::{HlSpan, HlStyle};
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Parser, Query, QueryCursor};
 
+fn lang_cache() -> &'static Mutex<HashMap<String, (Language, &'static str)>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, (Language, &'static str)>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 pub fn highlight(lang: &str, code: &str) -> Vec<HlSpan> {
-    let Some((language, queries)) = lang_for(lang) else {
+    let key = lang.trim().to_ascii_lowercase();
+    let entry = {
+        let mut guard = lang_cache().lock().unwrap();
+        if let Some(v) = guard.get(&key) {
+            Some(v.clone())
+        } else if let Some(v) = lang_for(&key) {
+            guard.insert(key.clone(), v.clone());
+            Some(v)
+        } else {
+            None
+        }
+    };
+    let Some((language, queries)) = entry else {
         return Vec::new();
     };
     let mut parser = Parser::new();
