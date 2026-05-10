@@ -9,12 +9,16 @@ fn main() -> iced::Result {
         }
     }
     let initial: Option<PathBuf> = std::env::args().nth(1).map(PathBuf::from);
+    #[cfg(target_os = "macos")]
+    let platform_specific = iced::window::settings::PlatformSpecific {
+        title_hidden: true,
+        titlebar_transparent: true,
+        fullsize_content_view: true,
+    };
+    #[cfg(not(target_os = "macos"))]
+    let platform_specific = iced::window::settings::PlatformSpecific::default();
     let window = iced::window::Settings {
-        platform_specific: iced::window::settings::PlatformSpecific {
-            title_hidden: true,
-            titlebar_transparent: true,
-            fullsize_content_view: true,
-        },
+        platform_specific,
         ..Default::default()
     };
     iced::application(App::title, App::update, App::view)
