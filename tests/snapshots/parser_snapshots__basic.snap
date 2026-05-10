@@ -2,30 +2,34 @@
 source: tests/parser_snapshots.rs
 expression: blocks
 ---
-- Heading:
-    level: 1
-    id: title
-    inlines:
-      - Text: Title
-- Paragraph:
-    - Text: "Hello "
-    - Emph:
-        - Text: world
-    - Text: ". This is "
-    - Strong:
-        - Text: strong
-    - Text: "."
-- Heading:
-    level: 2
-    id: subtitle
-    inlines:
-      - Text: Subtitle
-- Paragraph:
-    - Text: "A paragraph with "
-    - Code: inline code
-    - Text: " and a "
-    - Link:
-        url: "https://example.com"
-        children:
-          - Text: link
-    - Text: "."
+- - 17112759990204506010
+  - Heading:
+      level: 1
+      id: title
+      inlines:
+        - Text: Title
+- - 17122750060262874236
+  - Paragraph:
+      - Text: "Hello "
+      - Emph:
+          - Text: world
+      - Text: ". This is "
+      - Strong:
+          - Text: strong
+      - Text: "."
+- - 7439601310080933945
+  - Heading:
+      level: 2
+      id: subtitle
+      inlines:
+        - Text: Subtitle
+- - 5128398907541903576
+  - Paragraph:
+      - Text: "A paragraph with "
+      - Code: inline code
+      - Text: " and a "
+      - Link:
+          url: "https://example.com"
+          children:
+            - Text: link
+      - Text: "."

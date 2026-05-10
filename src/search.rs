@@ -1,4 +1,4 @@
-use crate::ast::{Block, Inline, ListItem};
+use crate::ast::{Block, BlockId, Inline, ListItem};
 
 pub fn find_all(haystack: &str, needle: &str) -> Vec<usize> {
     if needle.is_empty() {
@@ -21,12 +21,12 @@ pub struct MatchPos {
     pub in_block: usize,
 }
 
-pub fn find_in_blocks(blocks: &[Block], query: &str) -> Vec<MatchPos> {
+pub fn find_in_blocks(blocks: &[(BlockId, Block)], query: &str) -> Vec<MatchPos> {
     if query.is_empty() {
         return Vec::new();
     }
     let mut out = Vec::new();
-    for (bi, b) in blocks.iter().enumerate() {
+    for (bi, (_id, b)) in blocks.iter().enumerate() {
         let text = block_text(b);
         let n = find_all(&text, query).len();
         for k in 0..n {

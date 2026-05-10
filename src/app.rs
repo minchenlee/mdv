@@ -1,4 +1,4 @@
-use crate::ast::Block;
+use crate::ast::{Block, BlockId};
 use crate::parser;
 use crate::icon::{self, ic};
 use crate::picker::{self, Picker, PickerMode};
@@ -68,7 +68,7 @@ pub enum Message {
 pub struct App {
     pub file: Option<PathBuf>,
     pub source: String,
-    pub ast: Vec<Block>,
+    pub ast: Vec<(BlockId, Block)>,
     pub theme_mode: ThemeMode,
     pub theme_preset: ThemePreset,
     pub palette: Palette,
@@ -232,6 +232,10 @@ impl App {
     fn rebuild_matches(&mut self) {
         self.matches = search::find_in_blocks(&self.ast, &self.query);
         self.match_idx = 0;
+    }
+
+    pub fn blocks(&self) -> impl Iterator<Item = &Block> {
+        self.ast.iter().map(|(_, b)| b)
     }
 
     fn open_overlay(&mut self, kind: Overlay) {
@@ -474,7 +478,7 @@ impl App {
             Message::FileLoaded(Ok((path, src))) => {
                 crate::recent::add(&path);
                 let mut parsed = parser::parse(&src);
-                for b in parsed.iter_mut() {
+                for (_id, b) in parsed.iter_mut() {
                     if let Block::CodeBlock { lang: Some(l), code, spans } = b {
                         if spans.is_empty() {
                             *spans = self.hl_cache.highlight(l, code);

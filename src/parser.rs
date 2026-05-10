@@ -1,7 +1,8 @@
-use crate::ast::{Block, Inline, ListItem};
+use crate::ast::{Block, BlockId, Inline, ListItem};
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use std::hash::{DefaultHasher, Hash, Hasher};
 
-pub fn parse(src: &str) -> Vec<Block> {
+pub fn parse(src: &str) -> Vec<(BlockId, Block)> {
     let src = strip_frontmatter(src);
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_TABLES);
@@ -13,7 +14,50 @@ pub fn parse(src: &str) -> Vec<Block> {
     for ev in parser {
         state.handle(ev);
     }
-    state.blocks
+    state.blocks.into_iter().map(|b| (block_id(&b), b)).collect()
+}
+
+fn block_id(b: &Block) -> BlockId {
+    let mut h = DefaultHasher::new();
+    fmt_block_for_hash(b, &mut h);
+    BlockId(h.finish())
+}
+
+fn fmt_block_for_hash<H: Hasher>(b: &Block, h: &mut H) {
+    use std::mem::discriminant;
+    discriminant(b).hash(h);
+    match b {
+        Block::Heading { level, id, inlines } => {
+            level.hash(h); id.hash(h);
+            for i in inlines { fmt_inline(i, h); }
+        }
+        Block::Paragraph(inlines) => for i in inlines { fmt_inline(i, h); },
+        Block::CodeBlock { lang, code, .. } => { lang.hash(h); code.hash(h); }
+        Block::Image { url, alt } => { url.hash(h); alt.hash(h); }
+        Block::Blockquote(blocks) => for x in blocks { fmt_block_for_hash(x, h); },
+        Block::List { ordered, items } => {
+            ordered.hash(h);
+            for it in items {
+                it.task.hash(h);
+                for x in &it.blocks { fmt_block_for_hash(x, h); }
+            }
+        }
+        Block::Table { headers, rows } => {
+            for c in headers { for i in c { fmt_inline(i, h); } }
+            for r in rows { for c in r { for i in c { fmt_inline(i, h); } } }
+        }
+        Block::Rule => {}
+    }
+}
+
+fn fmt_inline<H: Hasher>(i: &Inline, h: &mut H) {
+    use std::mem::discriminant;
+    discriminant(i).hash(h);
+    match i {
+        Inline::Text(s) | Inline::Code(s) => s.hash(h),
+        Inline::Emph(c) | Inline::Strong(c) | Inline::Strike(c) => for x in c { fmt_inline(x, h); },
+        Inline::Link { url, children } => { url.hash(h); for x in children { fmt_inline(x, h); } }
+    }
 }
 
 #[derive(Default)]

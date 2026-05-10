@@ -1,61 +1,66 @@
 ---
 source: tests/parser_snapshots.rs
-assertion_line: 14
 expression: blocks
 ---
-- Blockquote:
-    - Paragraph:
-        - Text: A blockquote
-        - Text: "\n"
-        - Text: with two lines.
-- List:
-    ordered: false
-    items:
-      - task: ~
-        blocks:
-          - Paragraph:
-              - Text: alpha
-      - task: ~
-        blocks:
-          - Paragraph:
-              - Text: beta
-          - List:
-              ordered: false
-              items:
-                - task: ~
-                  blocks:
-                    - Paragraph:
-                        - Text: nested
-      - task: true
-        blocks:
-          - Paragraph:
-              - Text: done
-      - task: false
-        blocks:
-          - Paragraph:
-              - Text: todo
-- List:
-    ordered: true
-    items:
-      - task: ~
-        blocks:
-          - Paragraph:
-              - Text: one
-      - task: ~
-        blocks:
-          - Paragraph:
-              - Text: two
-- CodeBlock:
-    lang: rust
-    code: "fn main() { println!(\"hi\"); }\n"
-    spans: []
-- Table:
-    headers:
-      - - Text: Col A
-      - - Text: Col B
-    rows:
-      - - - Text: "1"
-        - - Text: "2"
-      - - - Text: "3"
-        - - Text: "4"
-- Rule
+- - 5736119312827787497
+  - Blockquote:
+      - Paragraph:
+          - Text: A blockquote
+          - Text: "\n"
+          - Text: with two lines.
+- - 5066923285258152156
+  - List:
+      ordered: false
+      items:
+        - task: ~
+          blocks:
+            - Paragraph:
+                - Text: alpha
+        - task: ~
+          blocks:
+            - Paragraph:
+                - Text: beta
+            - List:
+                ordered: false
+                items:
+                  - task: ~
+                    blocks:
+                      - Paragraph:
+                          - Text: nested
+        - task: true
+          blocks:
+            - Paragraph:
+                - Text: done
+        - task: false
+          blocks:
+            - Paragraph:
+                - Text: todo
+- - 6012734556676843350
+  - List:
+      ordered: true
+      items:
+        - task: ~
+          blocks:
+            - Paragraph:
+                - Text: one
+        - task: ~
+          blocks:
+            - Paragraph:
+                - Text: two
+- - 5070428743641608330
+  - CodeBlock:
+      lang: rust
+      code: "fn main() { println!(\"hi\"); }\n"
+      spans: []
+- - 17808554115230246813
+  - Table:
+      headers:
+        - - Text: Col A
+        - - Text: Col B
+      rows:
+        - - - Text: "1"
+          - - Text: "2"
+        - - - Text: "3"
+          - - Text: "4"
+- - 7364705619221056123
+  - Rule

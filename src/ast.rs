@@ -1,5 +1,8 @@
 use std::ops::Range;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, serde::Serialize)]
+pub struct BlockId(pub u64);
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub enum Block {
     Heading { level: u8, id: String, inlines: Vec<Inline> },

@@ -1,5 +1,5 @@
 use crate::app::Message;
-use crate::ast::{Block, Inline, ListItem};
+use crate::ast::{Block, BlockId, Inline, ListItem};
 use crate::theme::{Palette, Typography};
 use iced::widget::{container, image as image_widget, rich_text, row, span, text, Column, Space};
 use iced::{Element, Length, Padding};
@@ -12,13 +12,13 @@ pub struct Highlight {
 }
 
 pub fn render<'a>(
-    blocks: &'a [Block],
+    blocks: &'a [(BlockId, Block)],
     pal: &Palette,
     typ: &Typography,
     hl: &Highlight,
 ) -> Element<'a, Message> {
     let mut col = Column::new().spacing(14);
-    for (idx, b) in blocks.iter().enumerate() {
+    for (idx, (_id, b)) in blocks.iter().enumerate() {
         let local = if hl.current_block == Some(idx) {
             Some(hl.current_in_block)
         } else {
