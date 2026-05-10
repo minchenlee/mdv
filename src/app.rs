@@ -95,6 +95,7 @@ pub struct App {
     #[allow(dead_code)]
     pub first_frame_at: Option<std::time::Instant>,
     pub(crate) hl_cache: crate::highlight::HlCache,
+    pub(crate) height_cache: crate::virt::HeightCache,
 }
 
 impl Default for App {
@@ -129,6 +130,7 @@ impl Default for App {
             body_viewport: None,
             first_frame_at: None,
             hl_cache: crate::highlight::HlCache::default(),
+            height_cache: crate::virt::HeightCache::default(),
         }
     }
 }
@@ -761,7 +763,14 @@ impl App {
                     .map(|m| m.in_block)
                     .unwrap_or(0),
             };
-            crate::render::render(&self.ast, &pal, &self.typography, &hl)
+            crate::render::render(
+                &self.ast,
+                &pal,
+                &self.typography,
+                &hl,
+                self.body_viewport.as_ref(),
+                &self.height_cache,
+            )
         };
 
         let reader = scrollable(

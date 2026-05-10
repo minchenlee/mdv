@@ -16,21 +16,51 @@ pub fn render<'a>(
     pal: &Palette,
     typ: &Typography,
     hl: &Highlight,
+    viewport: Option<&iced::widget::scrollable::Viewport>,
+    cache: &crate::virt::HeightCache,
 ) -> Element<'a, Message> {
+    let (start, end) = match viewport {
+        Some(v) => crate::virt::visible_range(
+            blocks,
+            cache,
+            v.absolute_offset().y,
+            v.bounds().height,
+            5,
+        ),
+        None => (0, blocks.len()),
+    };
+
+    // Top spacer: sum heights of blocks [0..start)
+    let top_pad: f32 = blocks[..start]
+        .iter()
+        .map(|(id, b)| cache.get(*id, b) + 14.0)
+        .sum();
+    // Bottom spacer: sum heights of blocks [end..len)
+    let bot_pad: f32 = blocks[end..]
+        .iter()
+        .map(|(id, b)| cache.get(*id, b) + 14.0)
+        .sum();
+
     let mut col = Column::new().spacing(14);
-    for (idx, (_id, b)) in blocks.iter().enumerate() {
-        let local = if hl.current_block == Some(idx) {
+    if top_pad > 0.0 {
+        col = col.push(Space::with_height(Length::Fixed(top_pad)));
+    }
+    for (idx, (_id, b)) in blocks[start..end].iter().enumerate() {
+        let real_idx = start + idx;
+        let local = if hl.current_block == Some(real_idx) {
             Some(hl.current_in_block)
         } else {
             None
         };
         col = col.push(render_block(b, pal, typ, &hl.query, local));
     }
+    if bot_pad > 0.0 {
+        col = col.push(Space::with_height(Length::Fixed(bot_pad)));
+    }
+
     // Reading column cap: 780px (mdv design system READING_MAX, render.rs).
     let _ = typ.measure_ch;
-    container(col)
-        .max_width(780.0)
-        .into()
+    container(col).max_width(780.0).into()
 }
 
 fn render_block<'a>(
