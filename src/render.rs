@@ -19,43 +19,19 @@ pub fn render<'a>(
     viewport: Option<&iced::widget::scrollable::Viewport>,
     cache: &crate::virt::HeightCache,
 ) -> Element<'a, Message> {
-    let (start, end) = match viewport {
-        Some(v) => crate::virt::visible_range(
-            blocks,
-            cache,
-            v.absolute_offset().y,
-            v.bounds().height,
-            5,
-        ),
-        None => (0, blocks.len()),
-    };
-
-    // Top spacer: sum heights of blocks [0..start)
-    let top_pad: f32 = blocks[..start]
-        .iter()
-        .map(|(id, b)| cache.get(*id, b) + 14.0)
-        .sum();
-    // Bottom spacer: sum heights of blocks [end..len)
-    let bot_pad: f32 = blocks[end..]
-        .iter()
-        .map(|(id, b)| cache.get(*id, b) + 14.0)
-        .sum();
-
+    // Virt scroll disabled: rebuilding the visible-window Element tree on
+    // every scroll event causes per-frame rich_text reflow jank in Iced 0.13.
+    // Full render lets Iced's scrollable handle scrolling internally without
+    // re-emitting the body tree per delta.
+    let _ = (viewport, cache);
     let mut col = Column::new().spacing(14);
-    if top_pad > 0.0 {
-        col = col.push(Space::with_height(Length::Fixed(top_pad)));
-    }
-    for (idx, (_id, b)) in blocks[start..end].iter().enumerate() {
-        let real_idx = start + idx;
-        let local = if hl.current_block == Some(real_idx) {
+    for (idx, (_id, b)) in blocks.iter().enumerate() {
+        let local = if hl.current_block == Some(idx) {
             Some(hl.current_in_block)
         } else {
             None
         };
         col = col.push(render_block(b, pal, typ, &hl.query, local));
-    }
-    if bot_pad > 0.0 {
-        col = col.push(Space::with_height(Length::Fixed(bot_pad)));
     }
 
     // Reading column cap: 780px (mdv design system READING_MAX, render.rs).

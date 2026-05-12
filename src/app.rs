@@ -92,6 +92,7 @@ pub struct App {
     pub tree_viewport: Option<iced::widget::scrollable::Viewport>,
     pub overlay_viewport: Option<iced::widget::scrollable::Viewport>,
     pub body_viewport: Option<iced::widget::scrollable::Viewport>,
+    pub last_body_range: std::cell::Cell<(usize, usize)>,
     #[allow(dead_code)]
     pub first_frame_at: Option<std::time::Instant>,
     pub(crate) hl_cache: crate::highlight::HlCache,
@@ -128,6 +129,7 @@ impl Default for App {
             tree_viewport: None,
             overlay_viewport: None,
             body_viewport: None,
+            last_body_range: std::cell::Cell::new((0, 0)),
             first_frame_at: None,
             hl_cache: crate::highlight::HlCache::default(),
             height_cache: crate::virt::HeightCache::default(),
@@ -163,17 +165,18 @@ impl App {
     }
 
     fn scroll_overlay_to_cursor(&self) -> Task<Message> {
-        const ROW_H: f32 = 32.0;
-        let total = match self.overlay {
-            Overlay::FileFinder => self.filtered_files().len().min(80),
-            Overlay::Command => self.filtered_commands().len(),
-            Overlay::ThemePicker => self.filtered_themes().len(),
-            Overlay::FolderPicker => self
-                .picker
-                .as_ref()
-                .map(|p| p.entries.len())
-                .unwrap_or(0),
-            Overlay::None => 0,
+        let (total, row_h) = match self.overlay {
+            Overlay::FileFinder => (self.filtered_files().len().min(80), 32.0),
+            Overlay::Command => (self.filtered_commands().len(), 32.0),
+            Overlay::ThemePicker => (self.filtered_themes().len(), 32.0),
+            Overlay::FolderPicker => (
+                self.picker
+                    .as_ref()
+                    .map(|p| p.entries.len())
+                    .unwrap_or(0),
+                33.0,
+            ),
+            Overlay::None => (0, 32.0),
         };
         if total == 0 {
             return Task::none();
@@ -183,7 +186,7 @@ impl App {
             self.overlay_viewport.as_ref(),
             self.overlay_selected,
             total,
-            ROW_H,
+            row_h,
         )
     }
 
@@ -613,7 +616,23 @@ impl App {
                 Task::none()
             }
             Message::BodyScrolled(v) => {
-                self.body_viewport = Some(v);
+                // Only mutate state (→ trigger view rebuild) when the visible
+                // virt-range actually changed. Tiny scroll deltas within the
+                // already-rendered window become no-ops, eliminating per-frame
+                // rich_text rebuild jank during smooth scrolling.
+                let new_range = crate::virt::visible_range(
+                    &self.ast,
+                    &self.height_cache,
+                    v.absolute_offset().y,
+                    v.bounds().height,
+                    5,
+                );
+                let prev = self.last_body_range.get();
+                let need_search_update = self.search_open && !self.query.is_empty();
+                if new_range != prev || need_search_update {
+                    self.body_viewport = Some(v);
+                    self.last_body_range.set(new_range);
+                }
                 Task::none()
             }
             Message::Noop => Task::none(),
@@ -742,7 +761,7 @@ impl App {
         }
         let pal = self.palette;
 
-        let body: Element<'_, Message> = if let Some(err) = &self.error {
+        let reader: Element<'_, Message> = if let Some(err) = &self.error {
             centered_card(
                 column![
                     text("Couldn't open file").size(20).color(pal.fg),
@@ -767,31 +786,30 @@ impl App {
                     .map(|m| m.in_block)
                     .unwrap_or(0),
             };
-            crate::render::render(
+            let body = crate::render::render(
                 &self.ast,
                 &pal,
                 &self.typography,
                 &hl,
                 self.body_viewport.as_ref(),
                 &self.height_cache,
+            );
+            scrollable(
+                container(
+                    container(body)
+                        .max_width(READING_MAX)
+                        .width(Length::Shrink),
+                )
+                .padding(Padding::from([56, 32]))
+                .center_x(Length::Fill)
+                .width(Length::Fill),
             )
+            .id(Self::scroll_id())
+            .height(Length::Fill)
+            .direction(slim_scroll_direction())
+            .style(move |_, status| sleek_scrollable_style(status, pal))
+            .into()
         };
-
-        let reader = scrollable(
-            container(
-                container(body)
-                    .max_width(READING_MAX)
-                    .width(Length::Shrink),
-            )
-            .padding(Padding::from([56, 32]))
-            .center_x(Length::Fill)
-            .width(Length::Fill),
-        )
-        .id(Self::scroll_id())
-        .height(Length::Fill)
-        .on_scroll(Message::BodyScrolled)
-        .direction(slim_scroll_direction())
-            .style(move |_, status| sleek_scrollable_style(status, pal));
 
         let reader_with_search: Element<'_, Message> = if self.search_open {
             column![
@@ -871,6 +889,9 @@ fn edge_scroll(
     total: usize,
     row_h: f32,
 ) -> Task<Message> {
+    // List inside scrollable has small top/bottom padding (~6-8px each). Pad cur_bot
+    // so the bottom edge of the *last* row is fully revealed instead of clipped.
+    const PAD: f32 = 8.0;
     let Some(v) = viewport else {
         if total <= 1 {
             return Task::none();
@@ -882,7 +903,7 @@ fn edge_scroll(
         );
     };
     let cur_top = cursor as f32 * row_h;
-    let cur_bot = cur_top + row_h;
+    let cur_bot = cur_top + row_h + PAD;
     let off = v.absolute_offset();
     let view_top = off.y;
     let view_h = v.bounds().height;
