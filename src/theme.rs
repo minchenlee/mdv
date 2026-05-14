@@ -560,3 +560,46 @@ pub fn resolve_mode(mode: ThemeMode) -> ThemePreset {
 pub fn resolve(mode: ThemeMode) -> Palette {
     palette_for(resolve_mode(mode))
 }
+
+/// Identifies the currently active theme: a built-in preset or a custom theme
+/// loaded from the themes directory keyed by its slug.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ThemeId {
+    Preset(ThemePreset),
+    Custom(String),
+}
+
+impl ThemeId {
+    pub fn preset(self) -> Option<ThemePreset> {
+        match self {
+            ThemeId::Preset(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    pub fn slug(&self) -> String {
+        match self {
+            ThemeId::Preset(p) => preset_slug(*p).to_string(),
+            ThemeId::Custom(s) => s.clone(),
+        }
+    }
+}
+
+pub fn preset_slug(p: ThemePreset) -> &'static str {
+    match p {
+        ThemePreset::OneDark => "one-dark",
+        ThemePreset::OneLight => "one-light",
+        ThemePreset::GitHubDark => "github-dark",
+        ThemePreset::GitHubLight => "github-light",
+        ThemePreset::Solarized => "solarized-dark",
+        ThemePreset::SolarizedLight => "solarized-light",
+        ThemePreset::GruvboxDark => "gruvbox-dark",
+        ThemePreset::Nord => "nord",
+        ThemePreset::Dracula => "dracula",
+        ThemePreset::TokyoNight => "tokyo-night",
+    }
+}
+
+pub fn preset_by_slug(slug: &str) -> Option<ThemePreset> {
+    ThemePreset::ALL.iter().copied().find(|p| preset_slug(*p) == slug)
+}

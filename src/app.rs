@@ -27,6 +27,41 @@ pub enum Overlay {
 }
 
 #[derive(Debug, Clone)]
+pub enum ThemeEntry {
+    Preset(ThemePreset),
+    /// (slug, display name, palette)
+    Custom(String, String, theme::Palette),
+}
+
+impl ThemeEntry {
+    pub fn label(&self) -> &str {
+        match self {
+            ThemeEntry::Preset(p) => p.label(),
+            ThemeEntry::Custom(_, n, _) => n,
+        }
+    }
+    pub fn message(&self) -> Message {
+        match self {
+            ThemeEntry::Preset(p) => Message::SetTheme(*p),
+            ThemeEntry::Custom(s, _, _) => Message::SetCustomTheme(s.clone()),
+        }
+    }
+    pub fn palette(&self) -> theme::Palette {
+        match self {
+            ThemeEntry::Preset(p) => theme::palette_for(*p),
+            ThemeEntry::Custom(_, _, pal) => *pal,
+        }
+    }
+    pub fn matches_current(&self, current: &theme::ThemeId) -> bool {
+        match (self, current) {
+            (ThemeEntry::Preset(p), theme::ThemeId::Preset(c)) => p == c,
+            (ThemeEntry::Custom(s, _, _), theme::ThemeId::Custom(c)) => s == c,
+            _ => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum Message {
     Open(PathBuf),
     OpenWorkspace(PathBuf),
@@ -48,6 +83,8 @@ pub enum Message {
     OpenLink(String),
     ToggleTheme,
     SetTheme(ThemePreset),
+    SetCustomTheme(String),
+    ReloadThemes,
     ToggleSidebar,
     TreeToggle(PathBuf),
     TreeMove(isize),
@@ -105,6 +142,8 @@ pub struct App {
     pub(crate) height_cache: crate::virt::HeightCache,
     pub toast: Option<Toast>,
     pub toast_seq: u64,
+    pub custom_themes: Vec<crate::theme_load::CustomTheme>,
+    pub theme_id: crate::theme::ThemeId,
 }
 
 #[derive(Debug, Clone)]
@@ -149,6 +188,8 @@ impl Default for App {
             height_cache: crate::virt::HeightCache::default(),
             toast: None,
             toast_seq: 0,
+            custom_themes: Vec::new(),
+            theme_id: crate::theme::ThemeId::Preset(preset),
         }
     }
 }
@@ -225,7 +266,12 @@ impl App {
     }
 
     pub fn new(initial: Option<PathBuf>) -> (Self, Task<Message>) {
-        let app = Self::default();
+        let mut app = Self::default();
+        let mut errs = Vec::new();
+        app.custom_themes = crate::theme_load::discover(&mut errs);
+        if !errs.is_empty() && app.error.is_none() {
+            app.error = Some(format!("theme load: {}", errs.join("; ")));
+        }
         let task = match initial {
             Some(p) => {
                 if p.is_dir() {
@@ -239,6 +285,18 @@ impl App {
         (app, task)
     }
 
+    pub fn is_dark(&self) -> bool {
+        match &self.theme_id {
+            crate::theme::ThemeId::Preset(p) => p.is_dark(),
+            crate::theme::ThemeId::Custom(slug) => self
+                .custom_themes
+                .iter()
+                .find(|t| &t.slug == slug)
+                .map(|t| t.dark)
+                .unwrap_or_else(|| self.theme_preset.is_dark()),
+        }
+    }
+
     pub fn title(&self) -> String {
         match &self.file {
             Some(p) => format!(
@@ -250,7 +308,7 @@ impl App {
     }
 
     pub fn theme(&self) -> Theme {
-        if self.theme_preset.is_dark() {
+        if self.is_dark() {
             Theme::Dark
         } else {
             Theme::Light
@@ -337,6 +395,7 @@ impl App {
             ("Find in Document  ⌘F", Message::ToggleSearch),
             ("Cycle Theme  ⌘T", Message::ToggleTheme),
             ("Pick Theme…", Message::OpenThemePicker),
+            ("Reload Custom Themes", Message::ReloadThemes),
             ("Scroll to Top  g", Message::ScrollToTop),
             ("Scroll to Bottom  G", Message::ScrollToBottom),
         ]
@@ -374,9 +433,15 @@ impl App {
         scored
     }
 
-    fn filtered_themes(&self) -> Vec<ThemePreset> {
-        ThemePreset::ALL
+    fn filtered_themes(&self) -> Vec<ThemeEntry> {
+        let mut out: Vec<ThemeEntry> = ThemePreset::ALL
             .into_iter()
+            .map(ThemeEntry::Preset)
+            .chain(
+                self.custom_themes
+                    .iter()
+                    .map(|t| ThemeEntry::Custom(t.slug.clone(), t.name.clone(), t.palette)),
+            )
             .filter(|t| {
                 if self.overlay_query.is_empty() {
                     true
@@ -384,7 +449,9 @@ impl App {
                     picker::fuzzy_score(&self.overlay_query, t.label()).is_some()
                 }
             })
-            .collect()
+            .collect();
+        let _ = &mut out;
+        out
     }
 
     fn reveal_current_file(&mut self) {
@@ -512,9 +579,9 @@ impl App {
                 }
                 Overlay::ThemePicker => {
                     let themes = self.filtered_themes();
-                    if let Some(t) = themes.get(self.overlay_selected).copied() {
+                    if let Some(t) = themes.get(self.overlay_selected).cloned() {
                         self.overlay = Overlay::None;
-                        return Task::done(Message::SetTheme(t));
+                        return Task::done(t.message());
                     }
                     Task::none()
                 }
@@ -580,12 +647,40 @@ impl App {
             Message::ToggleTheme => {
                 self.theme_preset = self.theme_preset.next();
                 self.palette = theme::palette_for(self.theme_preset);
+                self.theme_id = theme::ThemeId::Preset(self.theme_preset);
                 self.show_toast(self.theme_preset.label().to_string())
             }
             Message::SetTheme(t) => {
                 self.theme_preset = t;
                 self.palette = theme::palette_for(t);
+                self.theme_id = theme::ThemeId::Preset(t);
                 self.show_toast(t.label().to_string())
+            }
+            Message::SetCustomTheme(slug) => {
+                if let Some(t) = self.custom_themes.iter().find(|t| t.slug == slug) {
+                    self.palette = t.palette;
+                    self.typography = t.typography;
+                    self.theme_id = theme::ThemeId::Custom(slug.clone());
+                    let label = t.name.clone();
+                    self.show_toast(label)
+                } else {
+                    Task::none()
+                }
+            }
+            Message::ReloadThemes => {
+                let mut errs = Vec::new();
+                self.custom_themes = crate::theme_load::discover(&mut errs);
+                if let theme::ThemeId::Custom(slug) = self.theme_id.clone() {
+                    if let Some(t) = self.custom_themes.iter().find(|t| t.slug == slug) {
+                        self.palette = t.palette;
+                        self.typography = t.typography;
+                    }
+                }
+                let n = self.custom_themes.len();
+                if !errs.is_empty() {
+                    self.error = Some(format!("theme load: {}", errs.join("; ")));
+                }
+                self.show_toast(format!("{n} custom theme{}", if n == 1 { "" } else { "s" }))
             }
             Message::ToastExpire(id) => {
                 if let Some(t) = &self.toast {
@@ -946,7 +1041,7 @@ impl App {
                     &self.overlay_query,
                     themes,
                     self.overlay_selected,
-                    self.theme_preset,
+                    self.theme_id.clone(),
                     pal,
                 );
                 iced::widget::stack![main, ov].into()
@@ -1581,9 +1676,9 @@ fn command_overlay<'a>(
 
 fn theme_overlay<'a>(
     query: &'a str,
-    themes: Vec<ThemePreset>,
+    themes: Vec<ThemeEntry>,
     selected: usize,
-    current: ThemePreset,
+    current: theme::ThemeId,
     pal: Palette,
 ) -> Element<'a, Message> {
     let input = container(
@@ -1606,8 +1701,8 @@ fn theme_overlay<'a>(
     let mut list = Column::new().spacing(0).padding(Padding::from([6, 8]));
     for (i, t) in themes.into_iter().enumerate() {
         let is_sel = i == selected;
-        let is_current = t == current;
-        let swatch_pal = theme::palette_for(t);
+        let is_current = t.matches_current(&current);
+        let swatch_pal = t.palette();
         let swatch = container(Space::new().width(Length::Fixed(14.0)).height(Length::Fixed(14.0)))
             .style(move |_| container::Style {
                 background: Some(swatch_pal.accent.into()),
@@ -1628,7 +1723,8 @@ fn theme_overlay<'a>(
                 },
                 ..Default::default()
             });
-        let label = t.label();
+        let label = t.label().to_string();
+        let msg = t.message();
         let marker: Element<'a, Message> = if is_current {
             icon::glyph(ic::CHECK, 12.0, pal.accent).into()
         } else {
@@ -1658,7 +1754,7 @@ fn theme_overlay<'a>(
             border: Border { radius: 6.0.into(), ..Default::default() },
             ..Default::default()
         })
-        .on_press(Message::SetTheme(t));
+        .on_press(msg);
         list = list.push(row);
     }
 
