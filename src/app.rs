@@ -68,6 +68,7 @@ pub enum Message {
     /// `RestoreBodyScroll(y)` uses absolute px offset.
     RestoreBodySnap(f32),
     RestoreBodyScroll(f32),
+    ToastExpire(u64),
     Noop,
 }
 
@@ -102,6 +103,14 @@ pub struct App {
     pub first_frame_at: Option<std::time::Instant>,
     pub(crate) hl_cache: crate::highlight::HlCache,
     pub(crate) height_cache: crate::virt::HeightCache,
+    pub toast: Option<Toast>,
+    pub toast_seq: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct Toast {
+    pub id: u64,
+    pub text: String,
 }
 
 impl Default for App {
@@ -138,11 +147,25 @@ impl Default for App {
             first_frame_at: None,
             hl_cache: crate::highlight::HlCache::default(),
             height_cache: crate::virt::HeightCache::default(),
+            toast: None,
+            toast_seq: 0,
         }
     }
 }
 
 impl App {
+    fn show_toast(&mut self, text: String) -> Task<Message> {
+        self.toast_seq = self.toast_seq.wrapping_add(1);
+        let id = self.toast_seq;
+        self.toast = Some(Toast { id, text });
+        Task::perform(
+            async {
+                tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+            },
+            move |_| Message::ToastExpire(id),
+        )
+    }
+
     fn scroll_id() -> iced::widget::Id {
         iced::widget::Id::new("body")
     }
@@ -557,11 +580,19 @@ impl App {
             Message::ToggleTheme => {
                 self.theme_preset = self.theme_preset.next();
                 self.palette = theme::palette_for(self.theme_preset);
-                Task::none()
+                self.show_toast(self.theme_preset.label().to_string())
             }
             Message::SetTheme(t) => {
                 self.theme_preset = t;
                 self.palette = theme::palette_for(t);
+                self.show_toast(t.label().to_string())
+            }
+            Message::ToastExpire(id) => {
+                if let Some(t) = &self.toast {
+                    if t.id == id {
+                        self.toast = None;
+                    }
+                }
                 Task::none()
             }
             Message::ToggleSidebar => {
@@ -887,7 +918,7 @@ impl App {
             .width(Length::Fill)
             .height(Length::Fill);
 
-        match self.overlay {
+        let base: Element<'_, Message> = match self.overlay {
             Overlay::None => main.into(),
             Overlay::FolderPicker => {
                 let ov = folder_picker_overlay(self.picker.as_ref(), self.overlay_selected, pal);
@@ -920,8 +951,35 @@ impl App {
                 );
                 iced::widget::stack![main, ov].into()
             }
+        };
+        match &self.toast {
+            Some(t) => iced::widget::stack![base, toast_overlay(&t.text, pal)].into(),
+            None => base,
         }
     }
+}
+
+fn toast_overlay<'a>(text: &str, pal: Palette) -> Element<'a, Message> {
+    use iced::widget::{container, text as text_w};
+    let bubble = container(text_w(text.to_string()).size(13.5).color(pal.fg))
+        .padding([8, 14])
+        .style(move |_| container::Style {
+            background: Some(pal.surface.into()),
+            border: iced::Border {
+                color: pal.rule,
+                width: 1.0,
+                radius: 8.0.into(),
+            },
+            text_color: Some(pal.fg),
+            ..Default::default()
+        });
+    container(bubble)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .padding([18, 0])
+        .align_x(iced::alignment::Horizontal::Center)
+        .align_y(iced::alignment::Vertical::Top)
+        .into()
 }
 
 fn edge_scroll(
