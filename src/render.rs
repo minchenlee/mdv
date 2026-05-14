@@ -468,18 +468,18 @@ fn render_table<'a>(
 
 fn style_color(s: crate::ast::HlStyle, pal: &Palette) -> iced::Color {
     use crate::ast::HlStyle::*;
+    let sx = &pal.syntax;
     match s {
-        // Universal hl palette (mdv design system: --hl-*)
-        Keyword => iced::Color::from_rgb(199.0 / 255.0, 92.0 / 255.0, 140.0 / 255.0),  // #c75c8c
-        Type => iced::Color::from_rgb(92.0 / 255.0, 166.0 / 255.0, 199.0 / 255.0),     // #5ca6c7
-        Function => iced::Color::from_rgb(103.0 / 255.0, 140.0 / 255.0, 217.0 / 255.0),// #678cd9
-        String => iced::Color::from_rgb(107.0 / 255.0, 166.0 / 255.0, 107.0 / 255.0),  // #6ba66b
-        Number => iced::Color::from_rgb(199.0 / 255.0, 140.0 / 255.0, 77.0 / 255.0),   // #c78c4d
-        Comment => pal.muted,
-        Operator => pal.fg,
-        Constant => iced::Color::from_rgb(199.0 / 255.0, 140.0 / 255.0, 77.0 / 255.0), // #c78c4d
-        Variable => pal.fg,
-        Punctuation => pal.muted,
+        Keyword => sx.keyword,
+        Type => sx.type_,
+        Function => sx.function,
+        String => sx.string,
+        Number => sx.number,
+        Comment => sx.comment,
+        Operator => sx.operator,
+        Constant => sx.constant,
+        Variable => sx.variable,
+        Punctuation => sx.punctuation,
         Plain => pal.fg,
     }
 }
