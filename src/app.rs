@@ -286,6 +286,49 @@ impl App {
         (app, task)
     }
 
+    /// Returns the next theme in cycle order: all built-in presets followed
+    /// by every loaded custom theme, then wraps. Tuple = (id, display label,
+    /// palette, optional typography override).
+    fn next_theme(
+        &self,
+    ) -> (
+        theme::ThemeId,
+        String,
+        theme::Palette,
+        Option<theme::Typography>,
+    ) {
+        let mut cycle: Vec<(theme::ThemeId, String, theme::Palette, Option<theme::Typography>)> =
+            theme::ThemePreset::ALL
+                .iter()
+                .map(|p| {
+                    (
+                        theme::ThemeId::Preset(*p),
+                        p.label().to_string(),
+                        theme::palette_for(*p),
+                        None,
+                    )
+                })
+                .collect();
+        for t in &self.custom_themes {
+            cycle.push((
+                theme::ThemeId::Custom(t.slug.clone()),
+                t.name.clone(),
+                t.palette,
+                Some(t.typography),
+            ));
+        }
+        let idx = cycle
+            .iter()
+            .position(|(id, _, _, _)| id == &self.theme_id)
+            .unwrap_or(usize::MAX);
+        let next = if idx == usize::MAX {
+            0
+        } else {
+            (idx + 1) % cycle.len()
+        };
+        cycle.swap_remove(next)
+    }
+
     pub fn is_dark(&self) -> bool {
         match &self.theme_id {
             crate::theme::ThemeId::Preset(p) => p.is_dark(),
@@ -646,10 +689,16 @@ impl App {
                 Task::none()
             }
             Message::ToggleTheme => {
-                self.theme_preset = self.theme_preset.next();
-                self.palette = theme::palette_for(self.theme_preset);
-                self.theme_id = theme::ThemeId::Preset(self.theme_preset);
-                self.show_toast(self.theme_preset.label().to_string())
+                let (next_id, label, pal, typo) = self.next_theme();
+                self.theme_id = next_id.clone();
+                if let theme::ThemeId::Preset(p) = next_id {
+                    self.theme_preset = p;
+                }
+                self.palette = pal;
+                if let Some(t) = typo {
+                    self.typography = t;
+                }
+                self.show_toast(label)
             }
             Message::SetTheme(t) => {
                 self.theme_preset = t;
