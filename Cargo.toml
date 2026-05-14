@@ -7,7 +7,7 @@ description = "Lightweight beautiful markdown viewer"
 license = "MIT"
 
 [dependencies]
-iced = { version = "0.13", features = ["tokio", "image", "advanced", "svg"] }
+iced = { version = "0.14", features = ["tokio", "image", "advanced", "svg", "lazy"] }
 pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
 notify = "7"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }

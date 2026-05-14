@@ -138,14 +138,14 @@ impl Default for App {
 }
 
 impl App {
-    fn scroll_id() -> iced::widget::scrollable::Id {
-        iced::widget::scrollable::Id::new("body")
+    fn scroll_id() -> iced::widget::Id {
+        iced::widget::Id::new("body")
     }
-    fn tree_scroll_id() -> iced::widget::scrollable::Id {
-        iced::widget::scrollable::Id::new("tree")
+    fn tree_scroll_id() -> iced::widget::Id {
+        iced::widget::Id::new("tree")
     }
-    fn overlay_scroll_id() -> iced::widget::scrollable::Id {
-        iced::widget::scrollable::Id::new("overlay")
+    fn overlay_scroll_id() -> iced::widget::Id {
+        iced::widget::Id::new("overlay")
     }
 
     fn scroll_tree_to_cursor(&self) -> Task<Message> {
@@ -231,7 +231,7 @@ impl App {
         let total = self.ast.len().max(1) as f32;
         // Center the matched block roughly in viewport by biasing slightly down.
         let y = ((m.block as f32) / total - 0.15).clamp(0.0, 1.0);
-        iced::widget::scrollable::snap_to(
+        iced::widget::operation::snap_to(
             Self::scroll_id(),
             iced::widget::scrollable::RelativeOffset { x: 0.0, y },
         )
@@ -568,15 +568,15 @@ impl App {
                 }
                 Task::none()
             }
-            Message::ScrollBy(dy) => iced::widget::scrollable::scroll_by(
+            Message::ScrollBy(dy) => iced::widget::operation::scroll_by(
                 Self::scroll_id(),
                 iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: dy },
             ),
-            Message::ScrollToTop => iced::widget::scrollable::scroll_to(
+            Message::ScrollToTop => iced::widget::operation::scroll_to(
                 Self::scroll_id(),
                 iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: 0.0 },
             ),
-            Message::ScrollToBottom => iced::widget::scrollable::scroll_to(
+            Message::ScrollToBottom => iced::widget::operation::scroll_to(
                 Self::scroll_id(),
                 iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: f32::MAX },
             ),
@@ -766,7 +766,7 @@ impl App {
                 column![
                     text("Couldn't open file").size(20).color(pal.fg),
                     text(err.clone()).color(pal.muted).size(13),
-                    Space::with_height(8),
+                    Space::new().height(8),
                     primary_button("Open Folder", pal).on_press(Message::OpenFolderPicker),
                 ]
                 .spacing(10)
@@ -883,7 +883,7 @@ impl App {
 }
 
 fn edge_scroll(
-    id: iced::widget::scrollable::Id,
+    id: iced::widget::Id,
     viewport: Option<&iced::widget::scrollable::Viewport>,
     cursor: usize,
     total: usize,
@@ -897,7 +897,7 @@ fn edge_scroll(
             return Task::none();
         }
         let y = (cursor as f32 / (total - 1) as f32).clamp(0.0, 1.0);
-        return iced::widget::scrollable::snap_to(
+        return iced::widget::operation::snap_to(
             id,
             iced::widget::scrollable::RelativeOffset { x: 0.0, y },
         );
@@ -915,14 +915,14 @@ fn edge_scroll(
     } else {
         return Task::none();
     };
-    iced::widget::scrollable::scroll_to(
+    iced::widget::operation::scroll_to(
         id,
         iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: new_y.max(0.0) },
     )
 }
 
 fn vertical_rule<'a>(pal: Palette) -> Element<'a, Message> {
-    container(Space::with_width(1.0))
+    container(Space::new().width(1.0))
         .height(Length::Fill)
         .style(move |_| container::Style {
             background: Some(pal.rule.into()),
@@ -954,7 +954,7 @@ fn welcome_view<'a>(pal: Palette) -> Element<'a, Message> {
         column![
             text("mdv").size(40).color(pal.fg),
             text("Lightweight, beautiful, native markdown viewer").size(14).color(pal.muted),
-            Space::with_height(22),
+            Space::new().height(22),
             kbd("Open Folder", "⌘O"),
             kbd("Find File in Workspace", "⌘P"),
             kbd("Command Palette", "⌘K"),
@@ -1034,7 +1034,7 @@ fn sidebar_view<'a>(app: &'a App, pal: Palette) -> Element<'a, Message> {
             text(ws_name.to_string().to_uppercase())
                 .size(11)
                 .color(pal.muted),
-            Space::with_width(Length::Fill),
+            Space::new().width(Length::Fill),
             ghost_lu(ic::ARROW_UP_FROM_LINE, pal).on_press(Message::OpenFolderPicker),
         ]
         .padding(Padding::from([10, 14]))
@@ -1092,7 +1092,7 @@ fn tree_row<'a>(
         let g = if open { ic::CHEVRON_DOWN } else { ic::CHEVRON_RIGHT };
         icon::glyph(g, 12.0, pal.subtle).into()
     } else {
-        Space::with_width(12.0).into()
+        Space::new().width(12.0).into()
     };
 
     let label_color = if is_current {
@@ -1125,9 +1125,9 @@ fn tree_row<'a>(
     let content = irow![
         indent,
         container(chevron).width(Length::Fixed(14.0)),
-        Space::with_width(4.0),
+        Space::new().width(4.0),
         leaf_icon,
-        Space::with_width(7.0),
+        Space::new().width(7.0),
         label,
     ]
     .align_y(iced::Alignment::Center)
@@ -1172,7 +1172,7 @@ fn tree_row<'a>(
 
 fn indent_guide<'a>(pal: Palette) -> Element<'a, Message> {
     container(
-        container(Space::with_height(Length::Fill))
+        container(Space::new().height(Length::Fill))
             .width(Length::Fixed(1.0))
             .height(Length::Fill)
             .style(move |_| container::Style {
@@ -1254,7 +1254,7 @@ fn folder_picker_overlay<'a>(
             .align_y(iced::Alignment::Center);
         crumb_row = crumb_row.push(ghost_lu(ic::HOME, pal).on_press(Message::PickerHome));
         crumb_row = crumb_row.push(ghost_lu(ic::ARROW_UP, pal).on_press(Message::PickerParent));
-        crumb_row = crumb_row.push(Space::with_width(8));
+        crumb_row = crumb_row.push(Space::new().width(8));
         for (i, (label, path)) in crumbs.iter().enumerate() {
             if i > 0 {
                 crumb_row = crumb_row.push(text("/").color(pal.subtle).size(12));
@@ -1381,7 +1381,7 @@ fn file_finder_overlay<'a>(
                 .unwrap_or_else(|| rel.clone());
             let inner = irow![
                 text(name).size(13).color(pal.fg),
-                Space::with_width(8),
+                Space::new().width(8),
                 text(parent).size(12).color(pal.subtle),
             ]
             .align_y(iced::Alignment::Center);
@@ -1408,7 +1408,7 @@ fn file_finder_overlay<'a>(
         .direction(slim_scroll_direction())
             .style(move |_, status| sleek_scrollable_style(status, pal));
 
-    let divider = container(Space::with_height(1.0))
+    let divider = container(Space::new().height(1.0))
         .width(Length::Fill)
         .style(move |_| container::Style {
             background: Some(pal.rule.into()),
@@ -1471,7 +1471,7 @@ fn command_overlay<'a>(
         .direction(slim_scroll_direction())
             .style(move |_, status| sleek_scrollable_style(status, pal));
 
-    let divider = container(Space::with_height(1.0))
+    let divider = container(Space::new().height(1.0))
         .width(Length::Fill)
         .style(move |_| container::Style {
             background: Some(pal.rule.into()),
@@ -1509,7 +1509,7 @@ fn theme_overlay<'a>(
         let is_sel = i == selected;
         let is_current = t == current;
         let swatch_pal = theme::palette_for(t);
-        let swatch = container(Space::new(Length::Fixed(14.0), Length::Fixed(14.0)))
+        let swatch = container(Space::new().width(Length::Fixed(14.0)).height(Length::Fixed(14.0)))
             .style(move |_| container::Style {
                 background: Some(swatch_pal.accent.into()),
                 border: Border {
@@ -1519,7 +1519,7 @@ fn theme_overlay<'a>(
                 },
                 ..Default::default()
             });
-        let bg_swatch = container(Space::new(Length::Fixed(14.0), Length::Fixed(14.0)))
+        let bg_swatch = container(Space::new().width(Length::Fixed(14.0)).height(Length::Fixed(14.0)))
             .style(move |_| container::Style {
                 background: Some(swatch_pal.bg.into()),
                 border: Border {
@@ -1533,16 +1533,16 @@ fn theme_overlay<'a>(
         let marker: Element<'a, Message> = if is_current {
             icon::glyph(ic::CHECK, 12.0, pal.accent).into()
         } else {
-            Space::with_width(12.0).into()
+            Space::new().width(12.0).into()
         };
         let row = button(
             irow![
                 marker,
-                Space::with_width(4),
+                Space::new().width(4),
                 bg_swatch,
-                Space::with_width(2),
+                Space::new().width(2),
                 swatch,
-                Space::with_width(8),
+                Space::new().width(8),
                 text(label).size(13).color(pal.fg),
             ]
             .align_y(iced::Alignment::Center),
@@ -1568,7 +1568,7 @@ fn theme_overlay<'a>(
         .direction(slim_scroll_direction())
             .style(move |_, status| sleek_scrollable_style(status, pal));
 
-    let divider = container(Space::with_height(1.0))
+    let divider = container(Space::new().height(1.0))
         .width(Length::Fill)
         .style(move |_| container::Style {
             background: Some(pal.rule.into()),
@@ -1606,7 +1606,7 @@ fn overlay_frame<'a>(
         });
 
     let scrim = mouse_area(
-        container(Space::new(Length::Fill, Length::Fill))
+        container(Space::new().width(Length::Fill).height(Length::Fill))
             .style(|_| container::Style {
                 background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.18))),
                 ..Default::default()
@@ -1650,7 +1650,7 @@ fn sleek_scrollable_style(
         background: None,
         border: Border { radius: 8.0.into(), ..Default::default() },
         scroller: scrollable::Scroller {
-            color: scroller_color,
+            background: Background::Color(scroller_color),
             border: Border { radius: 8.0.into(), ..Default::default() },
         },
     };
@@ -1659,6 +1659,12 @@ fn sleek_scrollable_style(
         vertical_rail: rail,
         horizontal_rail: rail,
         gap: None,
+        auto_scroll: scrollable::AutoScroll {
+            background: Background::Color(Color::TRANSPARENT),
+            border: Border::default(),
+            shadow: iced::Shadow::default(),
+            icon: Color::TRANSPARENT,
+        },
     }
 }
 

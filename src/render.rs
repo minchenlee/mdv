@@ -136,7 +136,7 @@ fn render_block<'a>(
         }
         Block::Rule => {
             let pal_r = *pal;
-            container(Space::with_height(1.0))
+            container(Space::new().height(1.0))
                 .width(Length::Fill)
                 .style(move |_| container::Style {
                     background: Some(pal_r.rule.into()),
