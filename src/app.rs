@@ -10,8 +10,27 @@ use iced::widget::{
     button, column, container, mouse_area, row as irow, scrollable, text, text_input, Column, Space,
 };
 use iced::{Background, Border, Color, Element, Length, Padding, Task, Theme};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewMode {
+    Rendered,
+    Raw,
+}
+
+#[derive(Debug, Clone)]
+pub enum ImageState {
+    Loading,
+    Loaded(iced::widget::image::Handle),
+    LoadedSvg {
+        svg: iced::widget::svg::Handle,
+        bytes: std::sync::Arc<Vec<u8>>,
+        /// Rasterized variant for zoom modal (filled lazily on first zoom open).
+        raster: Option<iced::widget::image::Handle>,
+    },
+    Failed,
+}
 
 const SIDEBAR_WIDTH: f32 = 280.0;
 const READING_MAX: f32 = 780.0;
@@ -24,6 +43,7 @@ pub enum Overlay {
     FileFinder,
     Command,
     ThemePicker,
+    ImageZoom,
 }
 
 #[derive(Debug, Clone)]
@@ -107,6 +127,10 @@ pub enum Message {
     RestoreBodySnap(f32),
     RestoreBodyScroll(f32),
     ToastExpire(u64),
+    ImageFetched(String, Result<Vec<u8>, String>),
+    SvgRasterized(String, Result<(Vec<u8>, u32, u32), String>),
+    OpenImageZoom(String),
+    ToggleViewMode,
     Noop,
 }
 
@@ -145,6 +169,9 @@ pub struct App {
     pub toast_seq: u64,
     pub custom_themes: Vec<crate::theme_load::CustomTheme>,
     pub theme_id: crate::theme::ThemeId,
+    pub image_cache: HashMap<String, ImageState>,
+    pub zoom_url: Option<String>,
+    pub view_mode: ViewMode,
 }
 
 #[derive(Debug, Clone)]
@@ -191,6 +218,9 @@ impl Default for App {
             toast_seq: 0,
             custom_themes: Vec::new(),
             theme_id: crate::theme::ThemeId::Preset(preset),
+            image_cache: HashMap::new(),
+            zoom_url: None,
+            view_mode: ViewMode::Rendered,
         }
     }
 }
@@ -252,7 +282,7 @@ impl App {
                     .unwrap_or(0),
                 33.0,
             ),
-            Overlay::None => (0, 32.0),
+            Overlay::None | Overlay::ImageZoom => (0, 32.0),
         };
         if total == 0 {
             return Task::none();
@@ -440,6 +470,7 @@ impl App {
             ("Find File in Workspace…  ⌘P", Message::OpenFileFinder),
             ("Toggle Sidebar  ⌘B", Message::ToggleSidebar),
             ("Find in Document  ⌘F", Message::ToggleSearch),
+            ("Toggle Raw/Rendered  ⌘E", Message::ToggleViewMode),
             ("Cycle Theme  ⌘T", Message::ToggleTheme),
             ("Pick Theme…", Message::OpenThemePicker),
             ("Reload Custom Themes", Message::ReloadThemes),
@@ -548,9 +579,87 @@ impl App {
                 iced::widget::operation::focus(Self::overlay_input_id())
             }
             Message::CloseOverlay => {
+                let was_zoom = self.overlay == Overlay::ImageZoom;
                 self.overlay = Overlay::None;
                 self.picker = None;
+                self.zoom_url = None;
+                if was_zoom { self.restore_body_scroll() } else { Task::none() }
+            }
+            Message::ImageFetched(url, Ok(bytes)) => {
+                let state = if is_svg_bytes(&bytes) || url.to_ascii_lowercase().ends_with(".svg") {
+                    let arc = std::sync::Arc::new(bytes);
+                    let svg = iced::widget::svg::Handle::from_memory(arc.as_ref().clone());
+                    ImageState::LoadedSvg { svg, bytes: arc, raster: None }
+                } else {
+                    let handle = iced::widget::image::Handle::from_bytes(bytes);
+                    ImageState::Loaded(handle)
+                };
+                self.image_cache.insert(url, state);
                 Task::none()
+            }
+            Message::SvgRasterized(key, Ok(rgba_bytes_w_h)) => {
+                let (rgba, w, h) = rgba_bytes_w_h;
+                let handle = iced::widget::image::Handle::from_rgba(w, h, rgba);
+                if let Some(entry) = self.image_cache.get_mut(&key) {
+                    if let ImageState::LoadedSvg { raster, .. } = entry {
+                        *raster = Some(handle);
+                    }
+                } else {
+                    self.image_cache.insert(key, ImageState::Loaded(handle));
+                }
+                Task::none()
+            }
+            Message::SvgRasterized(key, Err(_)) => {
+                self.image_cache.insert(key, ImageState::Failed);
+                Task::none()
+            }
+            Message::ImageFetched(url, Err(_)) => {
+                self.image_cache.insert(url, ImageState::Failed);
+                Task::none()
+            }
+            Message::ToggleViewMode => {
+                if self.file.is_none() {
+                    return Task::none();
+                }
+                let restore = self.restore_body_scroll();
+                self.view_mode = match self.view_mode {
+                    ViewMode::Rendered => ViewMode::Raw,
+                    ViewMode::Raw => ViewMode::Rendered,
+                };
+                restore
+            }
+            Message::OpenImageZoom(url) => {
+                let raster_task = match self.image_cache.get(&url) {
+                    Some(ImageState::LoadedSvg { bytes, raster: None, .. }) => {
+                        let key = url.clone();
+                        let bytes = bytes.clone();
+                        Some(Task::perform(
+                            async move { rasterize_svg(&bytes) },
+                            move |res| Message::SvgRasterized(key.clone(), res),
+                        ))
+                    }
+                    None if url.to_ascii_lowercase().ends_with(".svg") => {
+                        // Local svg path not yet in cache; load+raster.
+                        let key = url.clone();
+                        let path = std::path::PathBuf::from(&url);
+                        self.image_cache.insert(url.clone(), ImageState::Loading);
+                        Some(Task::perform(
+                            async move {
+                                let bytes = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
+                                rasterize_svg(&bytes)
+                            },
+                            move |res| Message::SvgRasterized(key.clone(), res),
+                        ))
+                    }
+                    _ => None,
+                };
+                self.zoom_url = Some(url);
+                self.overlay = Overlay::ImageZoom;
+                let restore = self.restore_body_scroll();
+                match raster_task {
+                    Some(t) => Task::batch([restore, t]),
+                    None => restore,
+                }
             }
             Message::PickerNavigate(p) => {
                 if let Some(pk) = self.picker.as_mut() {
@@ -597,7 +706,7 @@ impl App {
                         .as_ref()
                         .map(|p| p.entries.len())
                         .unwrap_or(0),
-                    Overlay::None => 0,
+                    Overlay::None | Overlay::ImageZoom => 0,
                 };
                 if len == 0 {
                     return Task::none();
@@ -648,7 +757,7 @@ impl App {
                     }
                     Task::none()
                 }
-                Overlay::None => Task::none(),
+                Overlay::None | Overlay::ImageZoom => Task::none(),
             },
             Message::OverlayDescend => {
                 if self.overlay == Overlay::FolderPicker {
@@ -680,7 +789,19 @@ impl App {
                 self.file = Some(path);
                 self.rebuild_matches();
                 self.reveal_current_file();
-                Task::none()
+                let mut fetches: Vec<Task<Message>> = Vec::new();
+                for (_id, b) in &self.ast {
+                    if let Block::Image { url, .. } = b {
+                        if is_remote_url(url) && !self.image_cache.contains_key(url) {
+                            self.image_cache.insert(url.clone(), ImageState::Loading);
+                            let u = url.clone();
+                            fetches.push(Task::perform(fetch_image(u), |(url, res)| {
+                                Message::ImageFetched(url, res)
+                            }));
+                        }
+                    }
+                }
+                if fetches.is_empty() { Task::none() } else { Task::batch(fetches) }
             }
             Message::FileChanged(p) => Task::perform(load_file(p), Message::FileLoaded),
             Message::OpenLink(url) => {
@@ -928,6 +1049,7 @@ impl App {
                         "b" if cmd => return Message::ToggleSidebar,
                         "f" if cmd => return Message::ToggleSearch,
                         "t" if cmd => return Message::ToggleTheme,
+                        "e" if cmd => return Message::ToggleViewMode,
                         _ => {}
                     }
                 }
@@ -1044,14 +1166,24 @@ impl App {
                     .map(|m| m.in_block)
                     .unwrap_or(0),
             };
-            let body = crate::render::render(
-                &self.ast,
-                &pal,
-                &self.typography,
-                &hl,
-                self.body_viewport.as_ref(),
-                &self.height_cache,
-            );
+            let body: Element<'_, Message> = if self.view_mode == ViewMode::Raw {
+                text(self.source.as_str())
+                    .font(iced::Font::MONOSPACE)
+                    .size(self.typography.code_size)
+                    .color(pal.fg)
+                    .into()
+            } else {
+                crate::render::render(
+                    &self.ast,
+                    &pal,
+                    &self.typography,
+                    &hl,
+                    self.body_viewport.as_ref(),
+                    &self.height_cache,
+                    &self.image_cache,
+                    self.file.as_deref(),
+                )
+            };
             scrollable(
                 container(
                     container(body)
@@ -1137,6 +1269,10 @@ impl App {
                 );
                 iced::widget::stack![main, ov].into()
             }
+            Overlay::ImageZoom => {
+                let ov = image_zoom_overlay(self.zoom_url.as_deref(), &self.image_cache, pal);
+                iced::widget::stack![main, ov].into()
+            }
         };
         match &self.toast {
             Some(t) => iced::widget::stack![base, toast_overlay(&t.text, pal)].into(),
@@ -1166,6 +1302,51 @@ fn toast_overlay<'a>(text: &str, pal: Palette) -> Element<'a, Message> {
         .align_x(iced::alignment::Horizontal::Center)
         .align_y(iced::alignment::Vertical::Top)
         .into()
+}
+
+fn image_zoom_overlay<'a>(
+    url: Option<&'a str>,
+    cache: &HashMap<String, ImageState>,
+    pal: Palette,
+) -> Element<'a, Message> {
+    use iced::widget::image::viewer;
+    let mk_viewer = |h: iced::widget::image::Handle| -> Element<'a, Message> {
+        viewer(h)
+            .min_scale(0.25)
+            .max_scale(10.0)
+            .scale_step(0.18)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    };
+    let inner: Element<'a, Message> = match url {
+        Some(u) => match cache.get(u) {
+            Some(ImageState::Loaded(h)) => mk_viewer(h.clone()),
+            Some(ImageState::LoadedSvg { raster: Some(h), .. }) => mk_viewer(h.clone()),
+            Some(ImageState::LoadedSvg { raster: None, .. })
+            | Some(ImageState::Loading) => text("rendering…").color(pal.muted).into(),
+            Some(ImageState::Failed) => text("image unavailable").color(pal.muted).into(),
+            None => {
+                // Local raster path (cache only stores svg/remote). Use direct viewer.
+                let p = std::path::PathBuf::from(u);
+                mk_viewer(iced::widget::image::Handle::from_path(p))
+            }
+        },
+        None => text("").into(),
+    };
+    let scrim = container(
+        container(inner)
+            .padding(24)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .style(move |_| container::Style {
+        background: Some(Color { a: 0.85, ..pal.bg }.into()),
+        ..Default::default()
+    });
+    mouse_area(scrim).on_press(Message::CloseOverlay).into()
 }
 
 fn edge_scroll(
@@ -1960,4 +2141,66 @@ async fn load_file(p: PathBuf) -> Result<(PathBuf, String), String> {
     let bytes = tokio::fs::read(&p).await.map_err(|e| e.to_string())?;
     let s = String::from_utf8_lossy(&bytes).into_owned();
     Ok((p, s))
+}
+
+async fn fetch_image(url: String) -> (String, Result<Vec<u8>, String>) {
+    let res = async {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .user_agent("mdv/0.2")
+            .build()
+            .map_err(|e| e.to_string())?;
+        let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            return Err(format!("http {}", resp.status()));
+        }
+        let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+        Ok::<Vec<u8>, String>(bytes.to_vec())
+    }
+    .await;
+    (url, res)
+}
+
+/// Rasterize SVG bytes to RGBA. Target ~2048px on the longer side.
+pub fn rasterize_svg(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
+    use resvg::tiny_skia;
+    use resvg::usvg;
+    const TARGET: f32 = 2048.0;
+    let opt = usvg::Options::default();
+    let tree = usvg::Tree::from_data(bytes, &opt).map_err(|e| e.to_string())?;
+    let sz = tree.size();
+    let (w, h) = (sz.width(), sz.height());
+    if w <= 0.0 || h <= 0.0 {
+        return Err("svg has zero size".into());
+    }
+    let scale = (TARGET / w.max(h)).max(1.0);
+    let pw = (w * scale).round() as u32;
+    let ph = (h * scale).round() as u32;
+    let mut pixmap = tiny_skia::Pixmap::new(pw, ph).ok_or("pixmap alloc failed")?;
+    resvg::render(
+        &tree,
+        tiny_skia::Transform::from_scale(scale, scale),
+        &mut pixmap.as_mut(),
+    );
+    Ok((pixmap.take(), pw, ph))
+}
+
+pub fn is_svg_bytes(b: &[u8]) -> bool {
+    let head = &b[..b.len().min(512)];
+    let s = std::str::from_utf8(head).unwrap_or("");
+    let s = s.trim_start();
+    s.starts_with("<svg") || s.starts_with("<?xml")
+}
+
+pub fn is_remote_url(s: &str) -> bool {
+    s.starts_with("http://") || s.starts_with("https://")
+}
+
+pub fn resolve_image_path(url: &str, current_file: Option<&std::path::Path>) -> Option<PathBuf> {
+    let p = std::path::Path::new(url);
+    if p.is_absolute() {
+        return Some(p.to_path_buf());
+    }
+    let base = current_file.and_then(|f| f.parent())?;
+    Some(base.join(url))
 }

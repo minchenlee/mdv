@@ -1,8 +1,10 @@
-use crate::app::Message;
+use crate::app::{ImageState, Message};
 use crate::ast::{Block, BlockId, Inline, ListItem};
 use crate::theme::{Palette, Typography};
-use iced::widget::{container, image as image_widget, rich_text, row, span, text, Column, Space};
+use iced::widget::{container, image as image_widget, mouse_area, rich_text, row, span, svg as svg_widget, text, Column, Space};
 use iced::{Element, Length, Padding};
+use std::collections::HashMap;
+use std::path::Path;
 
 #[derive(Clone, Default)]
 pub struct Highlight {
@@ -18,12 +20,15 @@ pub fn render<'a>(
     hl: &Highlight,
     viewport: Option<&iced::widget::scrollable::Viewport>,
     cache: &crate::virt::HeightCache,
+    image_cache: &'a HashMap<String, ImageState>,
+    current_file: Option<&'a Path>,
 ) -> Element<'a, Message> {
     // Virt scroll disabled: rebuilding the visible-window Element tree on
     // every scroll event causes per-frame rich_text reflow jank in Iced 0.13.
     // Full render lets Iced's scrollable handle scrolling internally without
     // re-emitting the body tree per delta.
     let _ = (viewport, cache);
+    let img_ctx = ImgCtx { cache: image_cache, current_file };
     let mut col = Column::new().spacing(14);
     for (idx, (_id, b)) in blocks.iter().enumerate() {
         let local = if hl.current_block == Some(idx) {
@@ -31,12 +36,18 @@ pub fn render<'a>(
         } else {
             None
         };
-        col = col.push(render_block(b, pal, typ, &hl.query, local));
+        col = col.push(render_block(b, pal, typ, &hl.query, local, &img_ctx));
     }
 
     // Reading column cap: 780px (mdv design system READING_MAX, render.rs).
     let _ = typ.measure_ch;
     container(col).max_width(780.0).into()
+}
+
+#[derive(Clone, Copy)]
+struct ImgCtx<'a> {
+    cache: &'a HashMap<String, ImageState>,
+    current_file: Option<&'a Path>,
 }
 
 fn render_block<'a>(
@@ -45,6 +56,7 @@ fn render_block<'a>(
     typ: &Typography,
     query: &str,
     current_in_block: Option<usize>,
+    img: &ImgCtx<'a>,
 ) -> Element<'a, Message> {
     let mut ctx = HlCtx { query, counter: 0, current_in_block, pal: *pal };
     match b {
@@ -102,7 +114,7 @@ fn render_block<'a>(
             let inner = blocks
                 .iter()
                 .fold(Column::new().spacing(8), |c, b| {
-                    c.push(render_block(b, pal, typ, query, current_in_block))
+                    c.push(render_block(b, pal, typ, query, current_in_block, img))
                 });
             let pal_q = *pal;
             container(inner)
@@ -123,17 +135,9 @@ fn render_block<'a>(
                 })
                 .into()
         }
-        Block::List { ordered, items } => render_list(*ordered, items, pal, typ, &mut ctx),
+        Block::List { ordered, items } => render_list(*ordered, items, pal, typ, &mut ctx, img),
         Block::Table { headers, rows } => render_table(headers, rows, pal, typ, &mut ctx),
-        Block::Image { url, alt } => {
-            if url.starts_with("http://") || url.starts_with("https://") {
-                text(format!("[image: {alt} ({url})]"))
-                    .color(pal.muted)
-                    .into()
-            } else {
-                image_widget(url).into()
-            }
-        }
+        Block::Image { url, alt } => render_image(url, alt, pal, img),
         Block::Rule => {
             let pal_r = *pal;
             container(Space::new().height(1.0))
@@ -330,12 +334,56 @@ fn push_span<'a>(
     }
 }
 
+fn render_image<'a>(
+    url: &'a str,
+    alt: &'a str,
+    pal: &Palette,
+    img: &ImgCtx<'a>,
+) -> Element<'a, Message> {
+    use crate::app::{is_remote_url, resolve_image_path};
+    let placeholder = |msg: String| -> Element<'a, Message> {
+        text(msg).color(pal.muted).into()
+    };
+    if is_remote_url(url) {
+        match img.cache.get(url) {
+            Some(ImageState::Loaded(h)) => mouse_area(image_widget(h.clone()))
+                .on_press(Message::OpenImageZoom(url.to_string()))
+                .into(),
+            Some(ImageState::LoadedSvg { svg, .. }) => mouse_area(svg_widget(svg.clone()))
+                .on_press(Message::OpenImageZoom(url.to_string()))
+                .into(),
+            Some(ImageState::Failed) => placeholder(format!("[image failed: {alt} ({url})]")),
+            _ => placeholder(format!("[loading: {alt} ({url})]")),
+        }
+    } else {
+        match resolve_image_path(url, img.current_file) {
+            Some(p) if p.exists() => {
+                let is_svg = p.extension().and_then(|e| e.to_str())
+                    .map(|e| e.eq_ignore_ascii_case("svg"))
+                    .unwrap_or(false);
+                let url_for_zoom = p.to_string_lossy().to_string();
+                if is_svg {
+                    mouse_area(svg_widget(iced::widget::svg::Handle::from_path(p.clone())))
+                        .on_press(Message::OpenImageZoom(url_for_zoom))
+                        .into()
+                } else {
+                    mouse_area(image_widget(p.clone()))
+                        .on_press(Message::OpenImageZoom(url_for_zoom))
+                        .into()
+                }
+            }
+            _ => placeholder(format!("[image missing: {alt} ({url})]")),
+        }
+    }
+}
+
 fn render_list<'a>(
     ordered: bool,
     items: &'a [ListItem],
     pal: &Palette,
     typ: &Typography,
     ctx: &mut HlCtx<'_>,
+    img: &ImgCtx<'a>,
 ) -> Element<'a, Message> {
     let mut col = Column::new().spacing(8);
     for (idx, it) in items.iter().enumerate() {
@@ -346,7 +394,7 @@ fn render_list<'a>(
             (false, _) => "•".to_string(),
         };
         let inner = it.blocks.iter().fold(Column::new().spacing(6), |c, b| {
-            c.push(render_block_inner(b, pal, typ, ctx))
+            c.push(render_block_inner(b, pal, typ, ctx, img))
         });
         col = col.push(
             row![
@@ -365,13 +413,14 @@ fn render_block_inner<'a>(
     pal: &Palette,
     typ: &Typography,
     ctx: &mut HlCtx<'_>,
+    img: &ImgCtx<'a>,
 ) -> Element<'a, Message> {
     match b {
         Block::Paragraph(inlines) => {
             let spans = inline_spans(inlines, pal, typ.body_size, ctx);
             rich_text(spans).into()
         }
-        _ => render_block(b, pal, typ, ctx.query, ctx.current_in_block),
+        _ => render_block(b, pal, typ, ctx.query, ctx.current_in_block, img),
     }
 }
 
