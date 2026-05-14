@@ -32,6 +32,7 @@ pub struct CustomTheme {
     pub palette: Palette,
     pub typography: Typography,
     pub path: PathBuf,
+    pub bundled: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -173,6 +174,59 @@ pub fn load_file(path: &Path) -> Result<CustomTheme, String> {
         palette,
         typography,
         path: path.to_path_buf(),
+        bundled: false,
+    })
+}
+
+include!(concat!(env!("OUT_DIR"), "/bundled_themes.rs"));
+
+/// Returns every theme baked into the binary. Cached for the process lifetime
+/// since the contents are static.
+pub fn bundled() -> &'static Vec<CustomTheme> {
+    use std::sync::OnceLock;
+    static CELL: OnceLock<Vec<CustomTheme>> = OnceLock::new();
+    CELL.get_or_init(|| {
+        let mut out = Vec::with_capacity(BUNDLED_BASE16.len());
+        for (stem, body) in BUNDLED_BASE16 {
+            match crate::theme_import::import_base16_str(body, stem) {
+                Ok(imp) => match toml_to_custom(&imp.toml, stem) {
+                    Ok(mut t) => {
+                        t.bundled = true;
+                        out.push(t);
+                    }
+                    Err(_) => {}
+                },
+                Err(_) => {}
+            }
+        }
+        out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        out
+    })
+}
+
+fn toml_to_custom(text: &str, stem: &str) -> Result<CustomTheme, String> {
+    let file: ThemeFile = toml::from_str(text).map_err(|e| e.to_string())?;
+    let name = file.name.clone().unwrap_or_else(|| stem.to_string());
+    let slug = slugify(stem);
+    let (base_palette, base_dark) = match file.extends.as_deref() {
+        Some(slug) => {
+            let preset = preset_by_slug(slug)
+                .ok_or_else(|| format!("unknown `extends` preset: {slug}"))?;
+            (palette_for(preset), preset.is_dark())
+        }
+        None => (palette_for(ThemePreset::OneDark), true),
+    };
+    let dark = file.dark.unwrap_or(base_dark);
+    let palette = apply_overrides(base_palette, &file.ui, &file.syntax)?;
+    let typography = apply_typography(Typography::DEFAULT, &file.typography);
+    Ok(CustomTheme {
+        slug,
+        name,
+        dark,
+        palette,
+        typography,
+        path: PathBuf::from(format!("<bundled:{stem}>")),
+        bundled: true,
     })
 }
 

@@ -269,7 +269,10 @@ impl App {
     pub fn new(initial: Option<PathBuf>) -> (Self, Task<Message>) {
         let mut app = Self::default();
         let mut errs = Vec::new();
-        app.custom_themes = crate::theme_load::discover(&mut errs);
+        let mut combined = crate::theme_load::bundled().clone();
+        combined.extend(crate::theme_load::discover(&mut errs));
+        combined.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        app.custom_themes = combined;
         if !errs.is_empty() && app.error.is_none() {
             app.error = Some(format!("theme load: {}", errs.join("; ")));
         }
@@ -719,7 +722,10 @@ impl App {
             }
             Message::ReloadThemes => {
                 let mut errs = Vec::new();
-                self.custom_themes = crate::theme_load::discover(&mut errs);
+                let mut combined = crate::theme_load::bundled().clone();
+                combined.extend(crate::theme_load::discover(&mut errs));
+                combined.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                self.custom_themes = combined;
                 if let theme::ThemeId::Custom(slug) = self.theme_id.clone() {
                     if let Some(t) = self.custom_themes.iter().find(|t| t.slug == slug) {
                         self.palette = t.palette;
@@ -735,7 +741,10 @@ impl App {
             Message::ThemeFilesChanged => {
                 let mut errs = Vec::new();
                 let before = self.custom_themes.len();
-                self.custom_themes = crate::theme_load::discover(&mut errs);
+                let mut combined = crate::theme_load::bundled().clone();
+                combined.extend(crate::theme_load::discover(&mut errs));
+                combined.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                self.custom_themes = combined;
                 let after = self.custom_themes.len();
                 let active_changed = if let theme::ThemeId::Custom(slug) = self.theme_id.clone() {
                     if let Some(t) = self.custom_themes.iter().find(|t| t.slug == slug) {

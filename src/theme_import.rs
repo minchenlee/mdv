@@ -44,7 +44,15 @@ struct Base16Yaml {
 
 pub fn import_base16(path: &Path) -> Result<Imported, String> {
     let raw = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-    let parsed: Base16Yaml = serde_yaml::from_str(&raw).map_err(|e| e.to_string())?;
+    let fallback = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Base16 Theme");
+    import_base16_str(&raw, fallback)
+}
+
+pub fn import_base16_str(raw: &str, fallback_name: &str) -> Result<Imported, String> {
+    let parsed: Base16Yaml = serde_yaml::from_str(raw).map_err(|e| e.to_string())?;
 
     // Resolve base00..base0F (accept either flat or `palette:` nested form).
     let mut bases: [Option<Color>; 16] = Default::default();
@@ -116,12 +124,7 @@ pub fn import_base16(path: &Path) -> Result<Imported, String> {
         },
     };
 
-    let name = parsed.name.clone().unwrap_or_else(|| {
-        path.file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("Base16 Theme")
-            .to_string()
-    });
+    let name = parsed.name.clone().unwrap_or_else(|| fallback_name.to_string());
     let slug = crate::theme_load::slugify(&name);
     let mut toml = String::new();
     toml.push_str(&format!("# Imported from Base16 scheme: {}\n", name));

@@ -100,6 +100,13 @@ fn run_theme_cmd(args: &[String]) -> i32 {
                     if p.is_dark() { "dark" } else { "light" }
                 );
             }
+            for t in mdv::theme_load::bundled() {
+                println!(
+                    "{:24} {:6} bundled",
+                    t.slug,
+                    if t.dark { "dark" } else { "light" }
+                );
+            }
             let mut errs = Vec::new();
             for t in mdv::theme_load::discover(&mut errs) {
                 println!(

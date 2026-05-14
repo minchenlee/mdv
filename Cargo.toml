@@ -5,6 +5,7 @@ edition = "2021"
 rust-version = "1.80"
 description = "Lightweight beautiful markdown viewer"
 license = "MIT"
+build = "build.rs"
 
 [dependencies]
 iced = { version = "0.14", features = ["tokio", "image", "advanced", "svg", "lazy"] }
