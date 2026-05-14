@@ -11,6 +11,7 @@ pub mod search;
 pub mod theme;
 pub mod theme_import;
 pub mod theme_load;
+pub mod theme_watch;
 pub mod tree;
 pub mod virt;
 pub mod watch;

@@ -85,6 +85,7 @@ pub enum Message {
     SetTheme(ThemePreset),
     SetCustomTheme(String),
     ReloadThemes,
+    ThemeFilesChanged,
     ToggleSidebar,
     TreeToggle(PathBuf),
     TreeMove(isize),
@@ -682,6 +683,36 @@ impl App {
                 }
                 self.show_toast(format!("{n} custom theme{}", if n == 1 { "" } else { "s" }))
             }
+            Message::ThemeFilesChanged => {
+                let mut errs = Vec::new();
+                let before = self.custom_themes.len();
+                self.custom_themes = crate::theme_load::discover(&mut errs);
+                let after = self.custom_themes.len();
+                let active_changed = if let theme::ThemeId::Custom(slug) = self.theme_id.clone() {
+                    if let Some(t) = self.custom_themes.iter().find(|t| t.slug == slug) {
+                        self.palette = t.palette;
+                        self.typography = t.typography;
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                if !errs.is_empty() {
+                    self.error = Some(format!("theme load: {}", errs.join("; ")));
+                }
+                if active_changed {
+                    self.show_toast("theme reloaded".to_string())
+                } else if before != after {
+                    self.show_toast(format!(
+                        "{after} custom theme{}",
+                        if after == 1 { "" } else { "s" }
+                    ))
+                } else {
+                    Task::none()
+                }
+            }
             Message::ToastExpire(id) => {
                 if let Some(t) = &self.toast {
                     if t.id == id {
@@ -815,6 +846,8 @@ impl App {
         });
         let watcher =
             crate::watch::watch_subscription(self.file.clone()).map(Message::FileChanged);
+        let theme_watcher =
+            crate::theme_watch::watch_subscription().map(|()| Message::ThemeFilesChanged);
         let focused = self.search_open;
         let overlay_open = self.overlay != Overlay::None;
         let tree_active = self.sidebar_open && self.workspace.is_some();
@@ -895,7 +928,7 @@ impl App {
                 };
                 m.unwrap_or(Message::Noop)
             });
-        iced::Subscription::batch([dnd, watcher, keys])
+        iced::Subscription::batch([dnd, watcher, theme_watcher, keys])
     }
 
     pub fn view(&self) -> Element<'_, Message> {
