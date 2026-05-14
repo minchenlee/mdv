@@ -103,6 +103,28 @@ pub fn visible_range(
     (s, e)
 }
 
+pub fn estimated_block_position(
+    blocks: &[(BlockId, Block)],
+    cache: &HeightCache,
+    block_idx: usize,
+) -> Option<(f32, f32)> {
+    let (_, (id, block)) = blocks.iter().enumerate().find(|(i, _)| *i == block_idx)?;
+    let top = blocks
+        .iter()
+        .take(block_idx)
+        .map(|(id, block)| cache.get(*id, block) + BLOCK_GAP_PX)
+        .sum();
+    Some((top, cache.get(*id, block)))
+}
+
+pub fn estimated_content_height(blocks: &[(BlockId, Block)], cache: &HeightCache) -> f32 {
+    blocks
+        .iter()
+        .map(|(id, block)| cache.get(*id, block) + BLOCK_GAP_PX)
+        .sum::<f32>()
+        .max(0.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,5 +194,31 @@ mod tests {
         let cache = HeightCache::default();
         let (s, _) = visible_range(&blocks, &cache, 5_000.0, 800.0, 0);
         assert!(s > 0, "should skip blocks above offset");
+    }
+
+    #[test]
+    fn estimated_position_uses_cumulative_heights() {
+        let blocks = make_paragraphs(3);
+        let mut cache = HeightCache::default();
+        cache.set_measured(BlockId(0), 100.0);
+        cache.set_measured(BlockId(1), 200.0);
+
+        let (top, height) = estimated_block_position(&blocks, &cache, 2).unwrap();
+
+        assert_eq!(top, 100.0 + BLOCK_GAP_PX + 200.0 + BLOCK_GAP_PX);
+        assert_eq!(height, estimate_height(&blocks[2].1));
+    }
+
+    #[test]
+    fn estimated_content_height_includes_gaps() {
+        let blocks = make_paragraphs(2);
+        let mut cache = HeightCache::default();
+        cache.set_measured(BlockId(0), 50.0);
+        cache.set_measured(BlockId(1), 75.0);
+
+        assert_eq!(
+            estimated_content_height(&blocks, &cache),
+            50.0 + BLOCK_GAP_PX + 75.0 + BLOCK_GAP_PX
+        );
     }
 }

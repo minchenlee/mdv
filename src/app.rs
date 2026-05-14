@@ -63,6 +63,11 @@ pub enum Message {
     TreeScrolled(iced::widget::scrollable::Viewport),
     OverlayScrolled(iced::widget::scrollable::Viewport),
     BodyScrolled(iced::widget::scrollable::Viewport),
+    /// Deferred body scroll restore. Emitted after a toggle that reinitialises
+    /// the body scrollable. `RestoreBodySnap(y)` uses relative offset [0..1];
+    /// `RestoreBodyScroll(y)` uses absolute px offset.
+    RestoreBodySnap(f32),
+    RestoreBodyScroll(f32),
     Noop,
 }
 
@@ -147,6 +152,12 @@ impl App {
     fn overlay_scroll_id() -> iced::widget::Id {
         iced::widget::Id::new("overlay")
     }
+    fn search_input_id() -> iced::widget::Id {
+        iced::widget::Id::new("search-input")
+    }
+    fn overlay_input_id() -> iced::widget::Id {
+        iced::widget::Id::new("overlay-input")
+    }
 
     fn scroll_tree_to_cursor(&self) -> Task<Message> {
         const ROW_H: f32 = 26.0;
@@ -223,18 +234,51 @@ impl App {
         }
     }
 
+    /// Re-snap the body scrollable to its last known offset. Iced 0.14 keys
+    /// scrollable widget state by tree position, so wrapping/unwrapping the
+    /// reader (search bar toggle, sidebar toggle) reinitialises the state and
+    /// snaps to the top. Call this after any toggle that changes the reader's
+    /// place in the tree.
+    fn restore_body_scroll(&self) -> Task<Message> {
+        let Some(v) = self.body_viewport.as_ref() else {
+            return Task::none();
+        };
+        let content_h = v.content_bounds().height;
+        let view_h = v.bounds().height;
+        if content_h <= view_h {
+            return Task::none();
+        }
+        let rel = v.absolute_offset().y / (content_h - view_h);
+        Task::done(Message::RestoreBodySnap(rel.clamp(0.0, 1.0)))
+    }
+
     fn scroll_to_current_match(&self) -> Task<Message> {
         if self.matches.is_empty() || self.ast.is_empty() {
             return Task::none();
         }
         let m = self.matches[self.match_idx];
-        let total = self.ast.len().max(1) as f32;
-        // Center the matched block roughly in viewport by biasing slightly down.
-        let y = ((m.block as f32) / total - 0.15).clamp(0.0, 1.0);
-        iced::widget::operation::snap_to(
-            Self::scroll_id(),
-            iced::widget::scrollable::RelativeOffset { x: 0.0, y },
-        )
+        let Some((block_top, block_h)) =
+            crate::virt::estimated_block_position(&self.ast, &self.height_cache, m.block)
+        else {
+            return Task::none();
+        };
+        let estimated_h = crate::virt::estimated_content_height(&self.ast, &self.height_cache);
+        let (content_h, view_h) = self
+            .body_viewport
+            .as_ref()
+            .map(|v| {
+                (
+                    v.content_bounds().height.max(estimated_h),
+                    v.bounds().height,
+                )
+            })
+            .unwrap_or((estimated_h, 0.0));
+        let max_scroll = (content_h - view_h).max(1.0);
+        // Place the matched block slightly above center, using document-position
+        // estimates instead of block index so tall blocks don't skew the jump.
+        let target = block_top + block_h * 0.5 - view_h * 0.38;
+        let rel = (target / max_scroll).clamp(0.0, 1.0);
+        Task::done(Message::RestoreBodySnap(rel))
     }
 
     fn rebuild_matches(&mut self) {
@@ -356,15 +400,15 @@ impl App {
                 } else {
                     self.open_overlay(Overlay::FolderPicker);
                 }
-                Task::none()
+                iced::widget::operation::focus(Self::overlay_input_id())
             }
             Message::OpenCommandPalette => {
                 self.open_overlay(Overlay::Command);
-                Task::none()
+                iced::widget::operation::focus(Self::overlay_input_id())
             }
             Message::OpenThemePicker => {
                 self.open_overlay(Overlay::ThemePicker);
-                Task::none()
+                iced::widget::operation::focus(Self::overlay_input_id())
             }
             Message::CloseOverlay => {
                 self.overlay = Overlay::None;
@@ -522,7 +566,7 @@ impl App {
             }
             Message::ToggleSidebar => {
                 self.sidebar_open = !self.sidebar_open;
-                Task::none()
+                self.restore_body_scroll()
             }
             Message::TreeToggle(p) => {
                 if !self.expanded.remove(&p) {
@@ -586,8 +630,13 @@ impl App {
                     self.query.clear();
                     self.matches.clear();
                     self.match_idx = 0;
+                    self.restore_body_scroll()
+                } else {
+                    Task::batch([
+                        iced::widget::operation::focus(Self::search_input_id()),
+                        self.restore_body_scroll(),
+                    ])
                 }
-                Task::none()
             }
             Message::QueryChanged(q) => {
                 self.query = q;
@@ -616,25 +665,17 @@ impl App {
                 Task::none()
             }
             Message::BodyScrolled(v) => {
-                // Only mutate state (→ trigger view rebuild) when the visible
-                // virt-range actually changed. Tiny scroll deltas within the
-                // already-rendered window become no-ops, eliminating per-frame
-                // rich_text rebuild jank during smooth scrolling.
-                let new_range = crate::virt::visible_range(
-                    &self.ast,
-                    &self.height_cache,
-                    v.absolute_offset().y,
-                    v.bounds().height,
-                    5,
-                );
-                let prev = self.last_body_range.get();
-                let need_search_update = self.search_open && !self.query.is_empty();
-                if new_range != prev || need_search_update {
-                    self.body_viewport = Some(v);
-                    self.last_body_range.set(new_range);
-                }
+                self.body_viewport = Some(v);
                 Task::none()
             }
+            Message::RestoreBodySnap(y) => iced::widget::operation::snap_to(
+                Self::scroll_id(),
+                iced::widget::scrollable::RelativeOffset { x: 0.0, y },
+            ),
+            Message::RestoreBodyScroll(y) => iced::widget::operation::scroll_to(
+                Self::scroll_id(),
+                iced::widget::scrollable::AbsoluteOffset { x: 0.0, y },
+            ),
             Message::Noop => Task::none(),
         }
     }
@@ -806,6 +847,7 @@ impl App {
             )
             .id(Self::scroll_id())
             .height(Length::Fill)
+            .on_scroll(Message::BodyScrolled)
             .direction(slim_scroll_direction())
             .style(move |_, status| sleek_scrollable_style(status, pal))
             .into()
@@ -984,6 +1026,7 @@ fn search_bar_view<'a>(
         irow![
             text("Find").size(12).color(pal.subtle),
             text_input("type to search…", query)
+                .id(App::search_input_id())
                 .on_input(Message::QueryChanged)
                 .on_submit(Message::NextMatch)
                 .padding(Padding::from([6, 10]))
@@ -1339,6 +1382,7 @@ fn file_finder_overlay<'a>(
 ) -> Element<'a, Message> {
     let input = container(
         text_input("Find file… (fuzzy)", query)
+            .id(App::overlay_input_id())
             .on_input(Message::OverlayQueryChanged)
             .on_submit(Message::OverlayConfirm)
             .padding(Padding::from([10, 14]))
@@ -1351,16 +1395,7 @@ fn file_finder_overlay<'a>(
                 value: pal.fg,
                 selection: pal.selection,
             }),
-    )
-    .style(move |_| container::Style {
-        background: Some(pal.surface.into()),
-        border: Border {
-            color: pal.rule,
-            width: 0.0,
-            radius: 0.0.into(),
-        },
-        ..Default::default()
-    });
+    );
 
     let mut list = Column::new().spacing(0).padding(Padding::from([6, 8]));
     if files.is_empty() {
@@ -1404,6 +1439,8 @@ fn file_finder_overlay<'a>(
         }
     }
     let body = scrollable(list)
+        .id(App::overlay_scroll_id())
+        .on_scroll(Message::OverlayScrolled)
         .height(Length::Fill)
         .direction(slim_scroll_direction())
             .style(move |_, status| sleek_scrollable_style(status, pal));
@@ -1426,6 +1463,7 @@ fn command_overlay<'a>(
 ) -> Element<'a, Message> {
     let input = container(
         text_input("Run a command…", query)
+            .id(App::overlay_input_id())
             .on_input(Message::OverlayQueryChanged)
             .on_submit(Message::OverlayConfirm)
             .padding(Padding::from([10, 14]))
@@ -1467,6 +1505,8 @@ fn command_overlay<'a>(
     }
 
     let body = scrollable(list)
+        .id(App::overlay_scroll_id())
+        .on_scroll(Message::OverlayScrolled)
         .height(Length::Fill)
         .direction(slim_scroll_direction())
             .style(move |_, status| sleek_scrollable_style(status, pal));
@@ -1490,6 +1530,7 @@ fn theme_overlay<'a>(
 ) -> Element<'a, Message> {
     let input = container(
         text_input("Pick theme…", query)
+            .id(App::overlay_input_id())
             .on_input(Message::OverlayQueryChanged)
             .on_submit(Message::OverlayConfirm)
             .padding(Padding::from([10, 14]))
@@ -1564,6 +1605,8 @@ fn theme_overlay<'a>(
     }
 
     let body = scrollable(list)
+        .id(App::overlay_scroll_id())
+        .on_scroll(Message::OverlayScrolled)
         .height(Length::Fill)
         .direction(slim_scroll_direction())
             .style(move |_, status| sleek_scrollable_style(status, pal));
