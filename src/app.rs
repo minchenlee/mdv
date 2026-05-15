@@ -35,6 +35,18 @@ pub enum ImageState {
 const SIDEBAR_WIDTH: f32 = 280.0;
 const READING_MAX: f32 = 780.0;
 const TREE_INDENT: f32 = 14.0;
+const SCROLLER_FADE_MS: u64 = 1200;
+const SIDEBAR_MIN: f32 = 160.0;
+const SIDEBAR_MAX: f32 = 600.0;
+
+fn editor_font() -> iced::Font {
+    iced::Font {
+        family: iced::font::Family::Name("JetBrains Mono"),
+        weight: iced::font::Weight::Normal,
+        stretch: iced::font::Stretch::Normal,
+        style: iced::font::Style::Normal,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Overlay {
@@ -121,6 +133,11 @@ pub enum Message {
     TreeScrolled(iced::widget::scrollable::Viewport),
     OverlayScrolled(iced::widget::scrollable::Viewport),
     BodyScrolled(iced::widget::scrollable::Viewport),
+    ScrollerTick,
+    CopyCode(String),
+    SidebarDragStart,
+    SidebarDragMove(f32),
+    SidebarDragEnd,
     /// Deferred body scroll restore. Emitted after a toggle that reinitialises
     /// the body scrollable. `RestoreBodySnap(y)` uses relative offset [0..1];
     /// `RestoreBodyScroll(y)` uses absolute px offset.
@@ -131,6 +148,11 @@ pub enum Message {
     SvgRasterized(String, Result<(Vec<u8>, u32, u32), String>),
     OpenImageZoom(String),
     ToggleViewMode,
+    HintSelection,
+    FoldToLevel(u8),
+    ToggleFold(crate::ast::BlockId),
+    HeadingHoverEnter(crate::ast::BlockId),
+    HeadingHoverExit(crate::ast::BlockId),
     EditorAction(iced::widget::text_editor::Action),
     SaveFile,
     FileSaved(Result<(), String>),
@@ -168,6 +190,9 @@ pub struct App {
     pub last_body_range: std::cell::Cell<(usize, usize)>,
     #[allow(dead_code)]
     pub first_frame_at: Option<std::time::Instant>,
+    pub last_scroll_at: Option<std::time::Instant>,
+    pub sidebar_width: f32,
+    pub sidebar_drag: Option<f32>,
     pub(crate) hl_cache: crate::highlight::HlCache,
     pub(crate) height_cache: crate::virt::HeightCache,
     pub toast: Option<Toast>,
@@ -181,6 +206,9 @@ pub struct App {
     pub dirty: bool,
     pub edit_history: Vec<String>,
     pub edit_redo: Vec<String>,
+    pub is_data_doc: bool,
+    pub folded: HashSet<crate::ast::BlockId>,
+    pub hovered_heading: Option<crate::ast::BlockId>,
 }
 
 #[derive(Debug, Clone)]
@@ -221,6 +249,9 @@ impl Default for App {
             body_viewport: None,
             last_body_range: std::cell::Cell::new((0, 0)),
             first_frame_at: None,
+            last_scroll_at: None,
+            sidebar_width: SIDEBAR_WIDTH,
+            sidebar_drag: None,
             hl_cache: crate::highlight::HlCache::default(),
             height_cache: crate::virt::HeightCache::default(),
             toast: None,
@@ -234,6 +265,9 @@ impl Default for App {
             dirty: false,
             edit_history: Vec::new(),
             edit_redo: Vec::new(),
+            is_data_doc: false,
+            folded: HashSet::new(),
+            hovered_heading: None,
         }
     }
 }
@@ -452,7 +486,24 @@ impl App {
         Task::done(Message::RestoreBodySnap(rel))
     }
 
+    fn synthesize_data_ast(&mut self) -> Option<Vec<(crate::ast::BlockId, Block)>> {
+        let lang = data_lang_for(self.file.as_deref())?;
+        let code = prettify_data(lang, &self.source);
+        let spans = self.hl_cache.highlight(lang, &code);
+        let block = Block::CodeBlock {
+            lang: Some(lang.to_string()),
+            code,
+            spans,
+        };
+        Some(vec![(crate::ast::BlockId(0), block)])
+    }
+
     fn reparse_source(&mut self) {
+        if let Some(ast) = self.synthesize_data_ast() {
+            self.ast = ast;
+            self.rebuild_matches();
+            return;
+        }
         let mut parsed = parser::parse(&self.source);
         for (_id, b) in parsed.iter_mut() {
             if let Block::CodeBlock { lang: Some(l), code, spans } = b {
@@ -500,8 +551,8 @@ impl App {
             ("Cycle Theme  ⌘T", Message::ToggleTheme),
             ("Pick Theme…", Message::OpenThemePicker),
             ("Reload Custom Themes", Message::ReloadThemes),
-            ("Scroll to Top  g", Message::ScrollToTop),
-            ("Scroll to Bottom  G", Message::ScrollToBottom),
+            ("Scroll to Top  ⌘↑", Message::ScrollToTop),
+            ("Scroll to Bottom  ⌘↓", Message::ScrollToBottom),
         ]
     }
 
@@ -641,6 +692,63 @@ impl App {
             }
             Message::ImageFetched(url, Err(_)) => {
                 self.image_cache.insert(url, ImageState::Failed);
+                Task::none()
+            }
+            Message::HintSelection => {
+                return self.show_toast("Press ⌘E to edit & select text".into());
+            }
+            Message::FoldToLevel(n) => {
+                if self.is_data_doc {
+                    return self.show_toast("Fold for data formats not yet supported".into());
+                }
+                self.folded.clear();
+                if n > 0 {
+                    for (id, b) in &self.ast {
+                        if let Block::Heading { level, .. } = b {
+                            if *level as u8 >= n {
+                                self.folded.insert(*id);
+                            }
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::ToggleFold(id) => {
+                if self.folded.contains(&id) {
+                    self.folded.remove(&id);
+                    return Task::none();
+                }
+                let mut parent_level: Option<u8> = None;
+                let mut new_folds: Vec<crate::ast::BlockId> = Vec::new();
+                for (bid, b) in &self.ast {
+                    if let Block::Heading { level, .. } = b {
+                        let lvl = *level as u8;
+                        if let Some(pl) = parent_level {
+                            if lvl <= pl {
+                                break;
+                            }
+                            new_folds.push(*bid);
+                        } else if *bid == id {
+                            parent_level = Some(lvl);
+                        }
+                    }
+                }
+                if parent_level.is_some() {
+                    self.folded.insert(id);
+                    for bid in new_folds {
+                        self.folded.insert(bid);
+                    }
+                }
+                Task::none()
+            }
+            Message::HeadingHoverEnter(id) => {
+                self.hovered_heading = Some(id);
+                Task::none()
+            }
+            Message::HeadingHoverExit(id) => {
+                if self.hovered_heading == Some(id) {
+                    self.hovered_heading = None;
+                }
                 Task::none()
             }
             Message::ToggleViewMode => {
@@ -888,18 +996,23 @@ impl App {
             }
             Message::FileLoaded(Ok((path, src))) => {
                 crate::recent::add(&path);
-                let mut parsed = parser::parse(&src);
-                for (_id, b) in parsed.iter_mut() {
-                    if let Block::CodeBlock { lang: Some(l), code, spans } = b {
-                        if spans.is_empty() {
-                            *spans = self.hl_cache.highlight(l, code);
+                self.source = src;
+                self.file = Some(path);
+                self.is_data_doc = data_lang_for(self.file.as_deref()).is_some();
+                if let Some(ast) = self.synthesize_data_ast() {
+                    self.ast = ast;
+                } else {
+                    let mut parsed = parser::parse(&self.source);
+                    for (_id, b) in parsed.iter_mut() {
+                        if let Block::CodeBlock { lang: Some(l), code, spans } = b {
+                            if spans.is_empty() {
+                                *spans = self.hl_cache.highlight(l, code);
+                            }
                         }
                     }
+                    self.ast = parsed;
                 }
-                self.ast = parsed;
-                self.source = src;
                 self.error = None;
-                self.file = Some(path);
                 self.rebuild_matches();
                 self.reveal_current_file();
                 let mut fetches: Vec<Task<Message>> = Vec::new();
@@ -1112,14 +1225,43 @@ impl App {
             }
             Message::TreeScrolled(v) => {
                 self.tree_viewport = Some(v);
+                self.last_scroll_at = Some(std::time::Instant::now());
                 Task::none()
             }
             Message::OverlayScrolled(v) => {
                 self.overlay_viewport = Some(v);
+                self.last_scroll_at = Some(std::time::Instant::now());
                 Task::none()
             }
             Message::BodyScrolled(v) => {
                 self.body_viewport = Some(v);
+                self.last_scroll_at = Some(std::time::Instant::now());
+                Task::none()
+            }
+            Message::CopyCode(s) => {
+                let toast = self.show_toast("Copied".into());
+                Task::batch([iced::clipboard::write::<Message>(s), toast])
+            }
+            Message::SidebarDragStart => {
+                self.sidebar_drag = Some(self.sidebar_width);
+                Task::none()
+            }
+            Message::SidebarDragMove(x) => {
+                if self.sidebar_drag.is_some() {
+                    self.sidebar_width = x.clamp(SIDEBAR_MIN, SIDEBAR_MAX);
+                }
+                Task::none()
+            }
+            Message::SidebarDragEnd => {
+                self.sidebar_drag = None;
+                Task::none()
+            }
+            Message::ScrollerTick => {
+                if let Some(t) = self.last_scroll_at {
+                    if t.elapsed() >= std::time::Duration::from_millis(SCROLLER_FADE_MS) {
+                        self.last_scroll_at = None;
+                    }
+                }
                 Task::none()
             }
             Message::RestoreBodySnap(y) => iced::widget::operation::snap_to(
@@ -1173,13 +1315,22 @@ impl App {
                 let cmd = mods.command() || mods.control();
                 if let Key::Character(c) = &key {
                     match c.as_str() {
+                        "p" if cmd && mods.shift() => return Message::OpenCommandPalette,
+                        "P" if cmd => return Message::OpenCommandPalette,
                         "p" if cmd => return Message::OpenFileFinder,
-                        "k" if cmd => return Message::OpenCommandPalette,
+                        "0" if cmd => return Message::FoldToLevel(0),
+                        "1" if cmd => return Message::FoldToLevel(1),
+                        "2" if cmd => return Message::FoldToLevel(2),
+                        "3" if cmd => return Message::FoldToLevel(3),
+                        "4" if cmd => return Message::FoldToLevel(4),
+                        "5" if cmd => return Message::FoldToLevel(5),
+                        "6" if cmd => return Message::FoldToLevel(6),
                         "o" if cmd => return Message::OpenFolderPicker,
                         "b" if cmd => return Message::ToggleSidebar,
                         "f" if cmd => return Message::ToggleSearch,
                         "t" if cmd => return Message::ToggleTheme,
                         "e" if cmd => return Message::ToggleViewMode,
+                        "c" if cmd && !editing && !overlay_open => return Message::HintSelection,
                         "s" if cmd => return Message::SaveFile,
                         "z" if cmd && editing && mods.shift() => return Message::EditorRedo,
                         "z" if cmd && editing => return Message::EditorUndo,
@@ -1226,6 +1377,8 @@ impl App {
                     Key::Named(Named::Space) if tree_active => {
                         Some(Message::TreeToggleAtCursor)
                     }
+                    Key::Named(Named::ArrowDown) if mods.command() => Some(Message::ScrollToBottom),
+                    Key::Named(Named::ArrowUp) if mods.command() => Some(Message::ScrollToTop),
                     Key::Named(Named::ArrowDown) => Some(Message::ScrollBy(40.0)),
                     Key::Named(Named::ArrowUp) => Some(Message::ScrollBy(-40.0)),
                     Key::Named(Named::Space) if mods.shift() => Some(Message::ScrollBy(-400.0)),
@@ -1245,7 +1398,26 @@ impl App {
                 };
                 m.unwrap_or(Message::Noop)
             });
-        iced::Subscription::batch([dnd, watcher, theme_watcher, keys])
+        let scroller = if self.last_scroll_at.is_some() {
+            iced::time::every(std::time::Duration::from_millis(150))
+                .map(|_| Message::ScrollerTick)
+        } else {
+            iced::Subscription::none()
+        };
+        let drag = if self.sidebar_drag.is_some() {
+            iced::event::listen_with(|ev, _status, _id| match ev {
+                iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
+                    Some(Message::SidebarDragMove(position.x))
+                }
+                iced::Event::Mouse(iced::mouse::Event::ButtonReleased(
+                    iced::mouse::Button::Left,
+                )) => Some(Message::SidebarDragEnd),
+                _ => None,
+            })
+        } else {
+            iced::Subscription::none()
+        };
+        iced::Subscription::batch([dnd, watcher, theme_watcher, keys, scroller, drag])
     }
 
     pub fn view(&self) -> Element<'_, Message> {
@@ -1277,6 +1449,9 @@ impl App {
             });
         }
         let pal = self.palette;
+        let recently_scrolled = self
+            .last_scroll_at
+            .is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(SCROLLER_FADE_MS));
 
         let reader: Element<'_, Message> = if let Some(err) = &self.error {
             centered_card(
@@ -1307,7 +1482,7 @@ impl App {
                 if let Some(ed) = self.editor.as_ref() {
                     iced::widget::text_editor(ed)
                         .on_action(Message::EditorAction)
-                        .font(iced::Font::MONOSPACE)
+                        .font(editor_font())
                         .size(self.typography.code_size)
                         .line_height(iced::widget::text::LineHeight::Relative(1.55))
                         .height(Length::Fill)
@@ -1335,6 +1510,23 @@ impl App {
                         .color(pal.fg)
                         .into()
                 }
+            } else if self.is_data_doc {
+                if let Some((_, Block::CodeBlock { code, spans, .. })) = self.ast.first() {
+                    crate::render::data_view(code, spans, &pal, &self.typography)
+                } else {
+                    crate::render::render(
+                        &self.ast,
+                        &pal,
+                        &self.typography,
+                        &hl,
+                        self.body_viewport.as_ref(),
+                        &self.height_cache,
+                        &self.image_cache,
+                        self.file.as_deref(),
+                        &self.folded,
+                        self.hovered_heading,
+                    )
+                }
             } else {
                 crate::render::render(
                     &self.ast,
@@ -1345,6 +1537,8 @@ impl App {
                     &self.height_cache,
                     &self.image_cache,
                     self.file.as_deref(),
+                    &self.folded,
+                    self.hovered_heading,
                 )
             };
             if self.view_mode == ViewMode::Raw {
@@ -1361,7 +1555,7 @@ impl App {
                     container(
                         container(body)
                             .max_width(READING_MAX)
-                            .width(Length::Shrink),
+                            .width(Length::Fill),
                     )
                     .padding(Padding::from([56, 32]))
                     .center_x(Length::Fill)
@@ -1371,7 +1565,7 @@ impl App {
                 .height(Length::Fill)
                 .on_scroll(Message::BodyScrolled)
                 .direction(slim_scroll_direction())
-                .style(move |_, status| sleek_scrollable_style(status, pal))
+                .style(move |_, status| sleek_scrollable_style(status, pal, recently_scrolled))
                 .into()
             }
         };
@@ -1390,7 +1584,7 @@ impl App {
         let main_area: Element<'_, Message> = if self.sidebar_open && self.workspace.is_some() {
             irow![
                 sidebar_view(self, pal),
-                vertical_rule(pal),
+                sidebar_resize_handle(pal),
                 container(reader_with_search)
                     .width(Length::Fill)
                     .height(Length::Fill),
@@ -1411,48 +1605,40 @@ impl App {
             .width(Length::Fill)
             .height(Length::Fill);
 
-        let base: Element<'_, Message> = match self.overlay {
-            Overlay::None => main.into(),
+        let overlay_layer: Element<'_, Message> = match self.overlay {
+            Overlay::None => Space::new().into(),
             Overlay::FolderPicker => {
-                let ov = folder_picker_overlay(self.picker.as_ref(), self.overlay_selected, pal);
-                iced::widget::stack![main, ov].into()
+                folder_picker_overlay(self.picker.as_ref(), self.overlay_selected, pal)
             }
             Overlay::FileFinder => {
                 let files = self.filtered_files();
-                let ov = file_finder_overlay(
-                    &self.overlay_query,
-                    files,
-                    self.overlay_selected,
-                    pal,
-                );
-                iced::widget::stack![main, ov].into()
+                file_finder_overlay(&self.overlay_query, files, self.overlay_selected, pal)
             }
             Overlay::Command => {
                 let cmds = self.filtered_commands();
-                let ov =
-                    command_overlay(&self.overlay_query, cmds, self.overlay_selected, pal);
-                iced::widget::stack![main, ov].into()
+                command_overlay(&self.overlay_query, cmds, self.overlay_selected, pal)
             }
             Overlay::ThemePicker => {
                 let themes = self.filtered_themes();
-                let ov = theme_overlay(
+                theme_overlay(
                     &self.overlay_query,
                     themes,
                     self.overlay_selected,
                     self.theme_id.clone(),
                     pal,
-                );
-                iced::widget::stack![main, ov].into()
+                )
             }
             Overlay::ImageZoom => {
-                let ov = image_zoom_overlay(self.zoom_url.as_deref(), &self.image_cache, pal);
-                iced::widget::stack![main, ov].into()
+                image_zoom_overlay(self.zoom_url.as_deref(), &self.image_cache, pal)
             }
         };
-        match &self.toast {
-            Some(t) => iced::widget::stack![base, toast_overlay(&t.text, pal)].into(),
-            None => base,
-        }
+        let base: Element<'_, Message> =
+            iced::widget::stack![Element::from(main), overlay_layer].into();
+        let toast_layer: Element<'_, Message> = match &self.toast {
+            Some(t) => toast_overlay(&t.text, pal),
+            None => Space::new().into(),
+        };
+        iced::widget::stack![base, toast_layer].into()
     }
 }
 
@@ -1563,20 +1749,14 @@ fn edge_scroll(
     )
 }
 
-fn vertical_rule<'a>(pal: Palette) -> Element<'a, Message> {
-    container(Space::new().width(1.0))
-        .height(Length::Fill)
-        .style(move |_| container::Style {
-            background: Some(pal.rule.into()),
-            ..Default::default()
-        })
-        .into()
-}
-
 fn welcome_view<'a>(pal: Palette) -> Element<'a, Message> {
     let kbd = |label: &'static str, key: &'static str| {
         irow![
-            container(text(key).size(11).color(pal.muted).font(iced::Font::with_name("JetBrains Mono")))
+            container(text(key).size(12).color(pal.fg).font(iced::Font {
+                family: iced::font::Family::Name("JetBrains Mono"),
+                weight: iced::font::Weight::Medium,
+                ..iced::Font::DEFAULT
+            }))
                 .padding(Padding::from([2, 7]))
                 .style(move |_| container::Style {
                     background: Some(pal.surface_alt.into()),
@@ -1599,10 +1779,11 @@ fn welcome_view<'a>(pal: Palette) -> Element<'a, Message> {
             Space::new().height(22),
             kbd("Open Folder", "⌘O"),
             kbd("Find File in Workspace", "⌘P"),
-            kbd("Command Palette", "⌘K"),
+            kbd("Command Palette", "⌘⇧P"),
             kbd("Toggle Sidebar", "⌘B"),
             kbd("Find in Document", "⌘F"),
             kbd("Cycle Theme", "⌘T"),
+            kbd("Edit / Select Text", "⌘E"),
         ]
         .spacing(8)
         .align_x(iced::Alignment::Start)
@@ -1667,6 +1848,9 @@ fn search_bar_view<'a>(
 }
 
 fn sidebar_view<'a>(app: &'a App, pal: Palette) -> Element<'a, Message> {
+    let recently_scrolled = app
+        .last_scroll_at
+        .is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(SCROLLER_FADE_MS));
     let ws = app.workspace.as_ref().unwrap();
     let ws_name = ws
         .file_name()
@@ -1678,7 +1862,25 @@ fn sidebar_view<'a>(app: &'a App, pal: Palette) -> Element<'a, Message> {
                 .size(11)
                 .color(pal.muted),
             Space::new().width(Length::Fill),
-            ghost_lu(ic::ARROW_UP_FROM_LINE, pal).on_press(Message::OpenFolderPicker),
+            iced::widget::tooltip(
+                ghost_lu(ic::COMMAND, pal).on_press(Message::OpenCommandPalette),
+                container(text("⌘⇧P").size(11).color(pal.fg).font(iced::Font {
+                    family: iced::font::Family::Name("JetBrains Mono"),
+                    weight: iced::font::Weight::Medium,
+                    ..iced::Font::DEFAULT
+                }))
+                .padding(Padding::from([4, 8]))
+                .style(move |_| container::Style {
+                    background: Some(pal.surface_alt.into()),
+                    border: Border {
+                        color: pal.rule,
+                        width: 1.0,
+                        radius: 5.0.into(),
+                    },
+                    ..Default::default()
+                }),
+                iced::widget::tooltip::Position::Bottom,
+            ),
         ]
         .padding(Padding::from([10, 14]))
         .spacing(6)
@@ -1701,16 +1903,31 @@ fn sidebar_view<'a>(app: &'a App, pal: Palette) -> Element<'a, Message> {
         .height(Length::Fill)
         .on_scroll(Message::TreeScrolled)
         .direction(slim_scroll_direction())
-            .style(move |_, status| sleek_scrollable_style(status, pal));
+            .style(move |_, status| sleek_scrollable_style(status, pal, recently_scrolled));
 
     container(column![header, body])
-        .width(Length::Fixed(SIDEBAR_WIDTH))
+        .width(Length::Fixed(app.sidebar_width))
         .height(Length::Fill)
         .style(move |_| container::Style {
             background: Some(pal.sidebar.into()),
             ..Default::default()
         })
         .into()
+}
+
+fn sidebar_resize_handle<'a>(pal: Palette) -> Element<'a, Message> {
+    mouse_area(
+        container(Space::new().width(Length::Fixed(5.0)).height(Length::Fill))
+            .style(move |_| container::Style {
+                background: Some(pal.sidebar.into()),
+                ..Default::default()
+            })
+            .height(Length::Fill),
+    )
+    .interaction(iced::mouse::Interaction::ResizingHorizontally)
+    .on_press(Message::SidebarDragStart)
+    .on_release(Message::SidebarDragEnd)
+    .into()
 }
 
 fn tree_row<'a>(
@@ -1898,10 +2115,8 @@ fn folder_picker_overlay<'a>(
         crumb_row = crumb_row.push(ghost_lu(ic::HOME, pal).on_press(Message::PickerHome));
         crumb_row = crumb_row.push(ghost_lu(ic::ARROW_UP, pal).on_press(Message::PickerParent));
         crumb_row = crumb_row.push(Space::new().width(8));
-        for (i, (label, path)) in crumbs.iter().enumerate() {
-            if i > 0 {
-                crumb_row = crumb_row.push(text("/").color(pal.subtle).size(12));
-            }
+        for (label, path) in crumbs.iter() {
+            crumb_row = crumb_row.push(text("/").color(pal.subtle).size(12));
             let label = label.clone();
             let path = path.clone();
             crumb_row = crumb_row.push(
@@ -1964,7 +2179,7 @@ fn folder_picker_overlay<'a>(
             .height(Length::Fill)
             .on_scroll(Message::OverlayScrolled)
             .direction(slim_scroll_direction())
-            .style(move |_, status| sleek_scrollable_style(status, pal));
+            .style(move |_, status| sleek_scrollable_style(status, pal, false));
 
         column![header, body].into()
     } else {
@@ -2043,7 +2258,7 @@ fn file_finder_overlay<'a>(
         .on_scroll(Message::OverlayScrolled)
         .height(Length::Fill)
         .direction(slim_scroll_direction())
-            .style(move |_, status| sleek_scrollable_style(status, pal));
+            .style(move |_, status| sleek_scrollable_style(status, pal, false));
 
     let divider = container(Space::new().height(1.0))
         .width(Length::Fill)
@@ -2109,7 +2324,7 @@ fn command_overlay<'a>(
         .on_scroll(Message::OverlayScrolled)
         .height(Length::Fill)
         .direction(slim_scroll_direction())
-            .style(move |_, status| sleek_scrollable_style(status, pal));
+            .style(move |_, status| sleek_scrollable_style(status, pal, false));
 
     let divider = container(Space::new().height(1.0))
         .width(Length::Fill)
@@ -2210,7 +2425,7 @@ fn theme_overlay<'a>(
         .on_scroll(Message::OverlayScrolled)
         .height(Length::Fill)
         .direction(slim_scroll_direction())
-            .style(move |_, status| sleek_scrollable_style(status, pal));
+            .style(move |_, status| sleek_scrollable_style(status, pal, false));
 
     let divider = container(Space::new().height(1.0))
         .width(Length::Fill)
@@ -2280,15 +2495,18 @@ fn slim_scroll_direction() -> scrollable::Direction {
 fn sleek_scrollable_style(
     status: scrollable::Status,
     pal: Palette,
+    recently_scrolled: bool,
 ) -> scrollable::Style {
-    let visible = matches!(
-        status,
-        scrollable::Status::Hovered { .. } | scrollable::Status::Dragged { .. }
-    );
-    let scroller_color = if visible {
-        pal.scroller_hover
-    } else {
-        Color::TRANSPARENT
+    let scroller_color = match status {
+        scrollable::Status::Dragged { .. } => pal.scroller_hover,
+        scrollable::Status::Hovered {
+            is_vertical_scrollbar_hovered: true, ..
+        }
+        | scrollable::Status::Hovered {
+            is_horizontal_scrollbar_hovered: true, ..
+        } => pal.scroller_hover,
+        _ if recently_scrolled => pal.scroller_hover,
+        _ => Color::TRANSPARENT,
     };
     let rail = scrollable::Rail {
         background: None,
@@ -2310,6 +2528,27 @@ fn sleek_scrollable_style(
             icon: Color::TRANSPARENT,
         },
     }
+}
+
+fn data_lang_for(path: Option<&std::path::Path>) -> Option<&'static str> {
+    let ext = path.and_then(|p| p.extension()).and_then(|e| e.to_str())?;
+    match ext.to_ascii_lowercase().as_str() {
+        "json" => Some("json"),
+        "yaml" | "yml" => Some("yaml"),
+        "toml" => Some("toml"),
+        _ => None,
+    }
+}
+
+fn prettify_data(lang: &str, src: &str) -> String {
+    if lang == "json" {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(src) {
+            if let Ok(s) = serde_json::to_string_pretty(&v) {
+                return s;
+            }
+        }
+    }
+    src.to_string()
 }
 
 async fn load_file(p: PathBuf) -> Result<(PathBuf, String), String> {

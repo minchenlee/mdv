@@ -102,6 +102,14 @@ fn lang_for(name: &str) -> Option<(Language, &'static str)> {
             tree_sitter_md::LANGUAGE.into(),
             tree_sitter_md::HIGHLIGHT_QUERY_BLOCK,
         )),
+        "yaml" | "yml" => Some((
+            tree_sitter_yaml::LANGUAGE.into(),
+            tree_sitter_yaml::HIGHLIGHTS_QUERY,
+        )),
+        "toml" => Some((
+            tree_sitter_toml_ng::LANGUAGE.into(),
+            tree_sitter_toml_ng::HIGHLIGHTS_QUERY,
+        )),
         _ => None,
     }
 }

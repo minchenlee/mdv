@@ -30,4 +30,5 @@ pub mod ic {
     pub const SUN: char = '\u{e178}';
     pub const COMMAND: char = '\u{e09a}';
     pub const PANEL_LEFT: char = '\u{e12a}';
+    pub const COPY: char = '\u{e09e}';
 }

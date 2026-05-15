@@ -111,7 +111,7 @@ impl Picker {
         for c in self.cwd.components() {
             acc.push(c.as_os_str());
             let label = match c {
-                std::path::Component::RootDir => "/".to_string(),
+                std::path::Component::RootDir => continue,
                 std::path::Component::Normal(s) => s.to_string_lossy().into_owned(),
                 std::path::Component::Prefix(p) => p.as_os_str().to_string_lossy().into_owned(),
                 _ => continue,
@@ -125,7 +125,7 @@ impl Picker {
 pub fn is_markdown_path(p: &Path) -> bool {
     matches!(
         p.extension().and_then(|s| s.to_str()),
-        Some("md") | Some("markdown")
+        Some("md") | Some("markdown") | Some("json") | Some("yaml") | Some("yml") | Some("toml")
     )
 }
 

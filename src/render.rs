@@ -1,7 +1,7 @@
 use crate::app::{ImageState, Message};
 use crate::ast::{Block, BlockId, Inline, ListItem};
 use crate::theme::{Palette, Typography};
-use iced::widget::{container, image as image_widget, mouse_area, rich_text, row, span, svg as svg_widget, text, Column, Space};
+use iced::widget::{container, image as image_widget, mouse_area, rich_text, row, span, stack, svg as svg_widget, text, Column, Space};
 use iced::{Element, Length, Padding};
 use std::collections::HashMap;
 use std::path::Path;
@@ -22,6 +22,8 @@ pub fn render<'a>(
     cache: &crate::virt::HeightCache,
     image_cache: &'a HashMap<String, ImageState>,
     current_file: Option<&'a Path>,
+    folded: &std::collections::HashSet<BlockId>,
+    hovered_heading: Option<BlockId>,
 ) -> Element<'a, Message> {
     // Virt scroll disabled: rebuilding the visible-window Element tree on
     // every scroll event causes per-frame rich_text reflow jank in Iced 0.13.
@@ -30,7 +32,32 @@ pub fn render<'a>(
     let _ = (viewport, cache);
     let img_ctx = ImgCtx { cache: image_cache, current_file };
     let mut col = Column::new().spacing(14);
-    for (idx, (_id, b)) in blocks.iter().enumerate() {
+    let mut fold_until: Option<u8> = None;
+    for (idx, (id, b)) in blocks.iter().enumerate() {
+        if let Block::Heading { level, .. } = b {
+            let lvl = *level as u8;
+            if let Some(thresh) = fold_until {
+                if lvl > thresh {
+                    continue;
+                }
+                fold_until = None;
+            }
+            let local = if hl.current_block == Some(idx) {
+                Some(hl.current_in_block)
+            } else {
+                None
+            };
+            let is_folded = folded.contains(id);
+            let show_chev = is_folded || hovered_heading == Some(*id);
+            col = col.push(render_heading_with_chevron(*id, b, pal, typ, &hl.query, local, is_folded, show_chev));
+            if is_folded {
+                fold_until = Some(lvl);
+            }
+            continue;
+        }
+        if fold_until.is_some() {
+            continue;
+        }
         let local = if hl.current_block == Some(idx) {
             Some(hl.current_in_block)
         } else {
@@ -42,6 +69,356 @@ pub fn render<'a>(
     // Reading column cap: 780px (mdv design system READING_MAX, render.rs).
     let _ = typ.measure_ch;
     container(col).max_width(780.0).into()
+}
+
+fn render_heading_with_chevron<'a>(
+    id: BlockId,
+    b: &'a Block,
+    pal: &Palette,
+    typ: &Typography,
+    query: &str,
+    current_in_block: Option<usize>,
+    folded: bool,
+    visible: bool,
+) -> Element<'a, Message> {
+    let cache = EMPTY_IMG_CACHE.get_or_init(HashMap::new);
+    let img = ImgCtx { cache, current_file: None };
+    let head = render_block(b, pal, typ, query, current_in_block, &img);
+    let glyph = if folded { crate::icon::ic::CHEVRON_RIGHT } else { crate::icon::ic::CHEVRON_DOWN };
+    let color = if visible { pal.muted } else { iced::Color::TRANSPARENT };
+    let chev = mouse_area(
+        container(crate::icon::glyph(glyph, 14.0, color))
+            .padding(Padding::from([0, 4])),
+    )
+    .interaction(iced::mouse::Interaction::Pointer)
+    .on_press(Message::ToggleFold(id));
+    let chev_layer = container(chev)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(iced::alignment::Horizontal::Right)
+        .align_y(iced::alignment::Vertical::Center);
+    let head_clickable = mouse_area(container(head).width(Length::Fill))
+        .interaction(iced::mouse::Interaction::Pointer)
+        .on_press(Message::ToggleFold(id));
+    let stacked = stack![head_clickable, chev_layer];
+    mouse_area(stacked)
+        .on_enter(Message::HeadingHoverEnter(id))
+        .on_exit(Message::HeadingHoverExit(id))
+        .into()
+}
+
+static EMPTY_IMG_CACHE: std::sync::OnceLock<HashMap<String, ImageState>> = std::sync::OnceLock::new();
+
+pub fn data_view<'a>(
+    code: &'a str,
+    _spans: &'a [crate::ast::HlSpan],
+    pal: &Palette,
+    typ: &Typography,
+) -> Element<'a, Message> {
+    let lang = detect_data_lang(code);
+    let colored = colorize_data(lang, code, pal);
+    let mut out: Vec<RtSpan<'a>> = Vec::new();
+    for (range, color) in colored {
+        let slice = &code[range];
+        out.push(
+            span(slice)
+                .color(color)
+                .font(iced::Font::with_name("JetBrains Mono"))
+                .size(typ.code_size)
+                .line_height(iced::widget::text::LineHeight::Relative(1.55)),
+        );
+    }
+    container(rich_text(out))
+        .padding(Padding::from([28, 32]))
+        .width(Length::Fill)
+        .into()
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DataLang { Json, Yaml, Toml }
+
+fn detect_data_lang(code: &str) -> DataLang {
+    let t = code.trim_start();
+    if t.starts_with('{') || t.starts_with('[') {
+        return DataLang::Json;
+    }
+    if code.lines().any(|l| {
+        let lt = l.trim_start();
+        lt.starts_with('[') && lt.contains(']')
+    }) && !code.contains(':') {
+        return DataLang::Toml;
+    }
+    if code.contains(" = ") || code.lines().any(|l| l.trim_start().starts_with('[')) {
+        return DataLang::Toml;
+    }
+    DataLang::Yaml
+}
+
+fn depth_palette(pal: &Palette) -> [iced::Color; 6] {
+    let s = pal.syntax;
+    [s.function, s.keyword, s.type_, s.constant, s.variable, s.operator]
+}
+
+fn colorize_data(lang: DataLang, code: &str, pal: &Palette) -> Vec<(std::ops::Range<usize>, iced::Color)> {
+    match lang {
+        DataLang::Json => colorize_json(code, pal),
+        DataLang::Yaml => colorize_yaml(code, pal),
+        DataLang::Toml => colorize_toml(code, pal),
+    }
+}
+
+fn color_for_value(text: &str, pal: &Palette) -> iced::Color {
+    let s = pal.syntax;
+    let t = text.trim();
+    if t == "true" || t == "false" || t == "null" || t == "~" {
+        s.constant
+    } else if t.parse::<f64>().is_ok() {
+        s.number
+    } else if (t.starts_with('"') && t.ends_with('"')) || (t.starts_with('\'') && t.ends_with('\'')) {
+        s.string
+    } else if t.is_empty() {
+        pal.fg
+    } else {
+        s.string
+    }
+}
+
+fn colorize_json(code: &str, pal: &Palette) -> Vec<(std::ops::Range<usize>, iced::Color)> {
+    let depths = depth_palette(pal);
+    let s = pal.syntax;
+    let mut out: Vec<(std::ops::Range<usize>, iced::Color)> = Vec::new();
+    let bytes = code.as_bytes();
+    let mut i = 0usize;
+    let mut depth: i32 = -1;
+    let mut expect_key = true;
+    while i < bytes.len() {
+        let c = bytes[i];
+        match c {
+            b'{' | b'[' => {
+                depth += 1;
+                out.push((i..i + 1, s.punctuation));
+                expect_key = c == b'{';
+                i += 1;
+            }
+            b'}' | b']' => {
+                out.push((i..i + 1, s.punctuation));
+                depth -= 1;
+                expect_key = false;
+                i += 1;
+            }
+            b',' => {
+                out.push((i..i + 1, s.punctuation));
+                expect_key = true;
+                i += 1;
+            }
+            b':' => {
+                out.push((i..i + 1, s.punctuation));
+                expect_key = false;
+                i += 1;
+            }
+            b'"' => {
+                let start = i;
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                        i += 2;
+                        continue;
+                    }
+                    if bytes[i] == b'"' {
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+                let color = if expect_key {
+                    let d = depth.max(0) as usize;
+                    depths[d % depths.len()]
+                } else {
+                    s.string
+                };
+                out.push((start..i, color));
+            }
+            b' ' | b'\t' | b'\n' | b'\r' => {
+                let start = i;
+                while i < bytes.len() && matches!(bytes[i], b' ' | b'\t' | b'\n' | b'\r') {
+                    i += 1;
+                }
+                out.push((start..i, pal.fg));
+            }
+            _ => {
+                let start = i;
+                while i < bytes.len()
+                    && !matches!(bytes[i], b'{' | b'}' | b'[' | b']' | b',' | b':' | b' ' | b'\t' | b'\n' | b'\r' | b'"')
+                {
+                    i += 1;
+                }
+                let tok = &code[start..i];
+                let col = if tok == "true" || tok == "false" || tok == "null" {
+                    s.constant
+                } else if tok.parse::<f64>().is_ok() {
+                    s.number
+                } else {
+                    pal.fg
+                };
+                out.push((start..i, col));
+            }
+        }
+    }
+    out
+}
+
+fn colorize_yaml(code: &str, pal: &Palette) -> Vec<(std::ops::Range<usize>, iced::Color)> {
+    let depths = depth_palette(pal);
+    let s = pal.syntax;
+    let mut out: Vec<(std::ops::Range<usize>, iced::Color)> = Vec::new();
+    let mut offset = 0usize;
+    for line in code.split_inclusive('\n') {
+        let line_start = offset;
+        let line_len = line.len();
+        offset += line_len;
+
+        let lead_ws: usize = line.chars().take_while(|c| *c == ' ').count();
+        let after_ws_byte = line_start + lead_ws;
+        if lead_ws > 0 {
+            out.push((line_start..after_ws_byte, pal.fg));
+        }
+        let body = &line[lead_ws..];
+        let body_trim = body.trim_end_matches(['\n', '\r']);
+        let trailing_nl = body.len() - body_trim.len();
+
+        if body_trim.is_empty() {
+            if trailing_nl > 0 {
+                out.push((after_ws_byte..line_start + line_len, pal.fg));
+            }
+            continue;
+        }
+        if body_trim.starts_with('#') {
+            out.push((after_ws_byte..after_ws_byte + body_trim.len(), s.comment));
+            if trailing_nl > 0 {
+                out.push((after_ws_byte + body_trim.len()..line_start + line_len, pal.fg));
+            }
+            continue;
+        }
+
+        let depth = lead_ws / 2;
+        let key_color = depths[depth % depths.len()];
+
+        if let Some(rest) = body_trim.strip_prefix("- ") {
+            out.push((after_ws_byte..after_ws_byte + 1, s.punctuation));
+            out.push((after_ws_byte + 1..after_ws_byte + 2, pal.fg));
+            let rest_start = after_ws_byte + 2;
+            push_yaml_kv_or_value(rest, rest_start, key_color, pal, &mut out);
+        } else {
+            push_yaml_kv_or_value(body_trim, after_ws_byte, key_color, pal, &mut out);
+        }
+        if trailing_nl > 0 {
+            let end = line_start + line_len;
+            out.push((end - trailing_nl..end, pal.fg));
+        }
+    }
+    out
+}
+
+fn push_yaml_kv_or_value(
+    body: &str,
+    body_start: usize,
+    key_color: iced::Color,
+    pal: &Palette,
+    out: &mut Vec<(std::ops::Range<usize>, iced::Color)>,
+) {
+    let s = pal.syntax;
+    if let Some(colon_idx) = body.find(':') {
+        let after = &body[colon_idx + 1..];
+        if after.is_empty() || after.starts_with(' ') {
+            let key_end = body_start + colon_idx;
+            out.push((body_start..key_end, key_color));
+            out.push((key_end..key_end + 1, s.punctuation));
+            let val = &body[colon_idx + 1..];
+            let val_start = key_end + 1;
+            let val_trim_start = val.len() - val.trim_start().len();
+            if val_trim_start > 0 {
+                out.push((val_start..val_start + val_trim_start, pal.fg));
+            }
+            let val_body = val.trim_start();
+            if !val_body.is_empty() {
+                let vs = val_start + val_trim_start;
+                out.push((vs..vs + val_body.len(), color_for_value(val_body, pal)));
+            }
+            return;
+        }
+    }
+    out.push((body_start..body_start + body.len(), color_for_value(body, pal)));
+}
+
+fn colorize_toml(code: &str, pal: &Palette) -> Vec<(std::ops::Range<usize>, iced::Color)> {
+    let depths = depth_palette(pal);
+    let s = pal.syntax;
+    let mut out: Vec<(std::ops::Range<usize>, iced::Color)> = Vec::new();
+    let mut offset = 0usize;
+    for line in code.split_inclusive('\n') {
+        let line_start = offset;
+        let line_len = line.len();
+        offset += line_len;
+
+        let body = line.trim_end_matches(['\n', '\r']);
+        let trailing_nl = line.len() - body.len();
+        let trimmed_start = body.len() - body.trim_start().len();
+        if trimmed_start > 0 {
+            out.push((line_start..line_start + trimmed_start, pal.fg));
+        }
+        let content = body.trim_start();
+        let content_start = line_start + trimmed_start;
+
+        if content.is_empty() {
+            if trailing_nl > 0 {
+                out.push((content_start..line_start + line_len, pal.fg));
+            }
+            continue;
+        }
+        if content.starts_with('#') {
+            out.push((content_start..content_start + content.len(), s.comment));
+            if trailing_nl > 0 {
+                out.push((content_start + content.len()..line_start + line_len, pal.fg));
+            }
+            continue;
+        }
+        if content.starts_with('[') {
+            let depth = content.bytes().take_while(|b| *b == b'[').count();
+            let color = depths[(depth - 1) % depths.len()];
+            out.push((content_start..content_start + content.len(), color));
+            if trailing_nl > 0 {
+                out.push((content_start + content.len()..line_start + line_len, pal.fg));
+            }
+            continue;
+        }
+        if let Some(eq_idx) = content.find('=') {
+            let key = &content[..eq_idx].trim_end();
+            let key_end = content_start + key.len();
+            out.push((content_start..key_end, depths[0]));
+            let between_end = content_start + eq_idx + 1;
+            if between_end > key_end {
+                out.push((key_end..between_end, s.punctuation));
+            }
+            let val = &content[eq_idx + 1..];
+            let val_start = content_start + eq_idx + 1;
+            let val_trim_start = val.len() - val.trim_start().len();
+            if val_trim_start > 0 {
+                out.push((val_start..val_start + val_trim_start, pal.fg));
+            }
+            let val_body = val.trim_start();
+            if !val_body.is_empty() {
+                let vs = val_start + val_trim_start;
+                out.push((vs..vs + val_body.len(), color_for_value(val_body, pal)));
+            }
+        } else {
+            out.push((content_start..content_start + content.len(), pal.fg));
+        }
+        if trailing_nl > 0 {
+            let end = line_start + line_len;
+            out.push((end - trailing_nl..end, pal.fg));
+        }
+    }
+    out
 }
 
 #[derive(Clone, Copy)]
@@ -96,7 +473,7 @@ fn render_block<'a>(
             if cursor < code.len() {
                 push_code_with_hl(&code[cursor..], pal_c.fg, pal, typ.code_size, &mut out, &mut ctx);
             }
-            container(rich_text(out))
+            let body = container(rich_text(out))
                 .padding(Padding::from(14))
                 .style(move |_| container::Style {
                     background: Some(pal_c.code_bg.into()),
@@ -107,8 +484,30 @@ fn render_block<'a>(
                     },
                     ..Default::default()
                 })
-                .width(Length::Fill)
-                .into()
+                .width(Length::Fill);
+            let code_str = code.to_string();
+            let icon_glyph = crate::icon::glyph(crate::icon::ic::COPY, 13.0, pal_c.muted);
+            let copy_btn = container(
+                mouse_area(
+                    container(icon_glyph)
+                        .padding(Padding::from([4, 6]))
+                        .style(move |_| container::Style {
+                            background: Some(pal_c.code_bg.into()),
+                            border: iced::Border {
+                                color: pal_c.code_border,
+                                width: 1.0,
+                                radius: 6.0.into(),
+                            },
+                            ..Default::default()
+                        }),
+                )
+                .interaction(iced::mouse::Interaction::Pointer)
+                .on_press(Message::CopyCode(code_str)),
+            )
+            .padding(Padding::from([6, 8]))
+            .align_x(iced::alignment::Horizontal::Right)
+            .width(Length::Fill);
+            stack![body, copy_btn].into()
         }
         Block::Blockquote(blocks) => {
             let inner = blocks

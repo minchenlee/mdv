@@ -1,0 +1,11 @@
+name = "mdv"
+version = "0.2.0"
+features = ["markdown", "json", "yaml", "toml"]
+
+[meta]
+author = "minchenlee"
+license = "MIT"
+
+[meta.nested]
+deep = true
+count = 42
