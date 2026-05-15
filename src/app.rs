@@ -1770,7 +1770,7 @@ fn edge_scroll(
 fn welcome_view<'a>(pal: Palette) -> Element<'a, Message> {
     let kbd = |label: &'static str, key: &'static str| {
         irow![
-            container(text(key).size(12).color(pal.fg).font(iced::Font::MONOSPACE).shaping(iced::widget::text::Shaping::Advanced))
+            container(text(key).size(12).color(pal.fg).shaping(iced::widget::text::Shaping::Advanced))
                 .padding(Padding::from([2, 7]))
                 .style(move |_| container::Style {
                     background: Some(pal.surface_alt.into()),
@@ -1882,7 +1882,7 @@ fn sidebar_view<'a>(app: &'a App, pal: Palette) -> Element<'a, Message> {
             Space::new().width(Length::Fill),
             iced::widget::tooltip(
                 ghost_lu(ic::COMMAND, pal).on_press(Message::OpenCommandPalette),
-                container(text("⌘⇧P").size(11).color(pal.fg).font(iced::Font::MONOSPACE).shaping(iced::widget::text::Shaping::Advanced))
+                container(text("⌘⇧P").size(11).color(pal.fg).shaping(iced::widget::text::Shaping::Advanced))
                 .padding(Padding::from([4, 8]))
                 .style(move |_| container::Style {
                     background: Some(pal.surface_alt.into()),
