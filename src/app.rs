@@ -131,6 +131,11 @@ pub enum Message {
     SvgRasterized(String, Result<(Vec<u8>, u32, u32), String>),
     OpenImageZoom(String),
     ToggleViewMode,
+    EditorAction(iced::widget::text_editor::Action),
+    SaveFile,
+    FileSaved(Result<(), String>),
+    EditorUndo,
+    EditorRedo,
     Noop,
 }
 
@@ -172,6 +177,10 @@ pub struct App {
     pub image_cache: HashMap<String, ImageState>,
     pub zoom_url: Option<String>,
     pub view_mode: ViewMode,
+    pub editor: Option<iced::widget::text_editor::Content>,
+    pub dirty: bool,
+    pub edit_history: Vec<String>,
+    pub edit_redo: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -221,6 +230,10 @@ impl Default for App {
             image_cache: HashMap::new(),
             zoom_url: None,
             view_mode: ViewMode::Rendered,
+            editor: None,
+            dirty: false,
+            edit_history: Vec::new(),
+            edit_redo: Vec::new(),
         }
     }
 }
@@ -439,6 +452,19 @@ impl App {
         Task::done(Message::RestoreBodySnap(rel))
     }
 
+    fn reparse_source(&mut self) {
+        let mut parsed = parser::parse(&self.source);
+        for (_id, b) in parsed.iter_mut() {
+            if let Block::CodeBlock { lang: Some(l), code, spans } = b {
+                if spans.is_empty() {
+                    *spans = self.hl_cache.highlight(l, code);
+                }
+            }
+        }
+        self.ast = parsed;
+        self.rebuild_matches();
+    }
+
     fn rebuild_matches(&mut self) {
         self.matches = search::find_in_blocks(&self.ast, &self.query);
         self.match_idx = 0;
@@ -622,11 +648,98 @@ impl App {
                     return Task::none();
                 }
                 let restore = self.restore_body_scroll();
-                self.view_mode = match self.view_mode {
-                    ViewMode::Rendered => ViewMode::Raw,
-                    ViewMode::Raw => ViewMode::Rendered,
-                };
+                match self.view_mode {
+                    ViewMode::Rendered => {
+                        self.editor = Some(iced::widget::text_editor::Content::with_text(
+                            self.source.as_str(),
+                        ));
+                        self.edit_history.clear();
+                        self.edit_redo.clear();
+                        self.dirty = false;
+                        self.view_mode = ViewMode::Raw;
+                    }
+                    ViewMode::Raw => {
+                        if let Some(ed) = self.editor.take() {
+                            let text = ed.text();
+                            if text != self.source {
+                                self.source = text;
+                                self.reparse_source();
+                            }
+                        }
+                        self.edit_history.clear();
+                        self.edit_redo.clear();
+                        self.view_mode = ViewMode::Rendered;
+                    }
+                }
                 restore
+            }
+            Message::EditorAction(action) => {
+                if let Some(ed) = self.editor.as_mut() {
+                    let edits = action.is_edit();
+                    if edits {
+                        let prev = ed.text();
+                        let push = self
+                            .edit_history
+                            .last()
+                            .map(|s| s != &prev)
+                            .unwrap_or(true);
+                        if push {
+                            self.edit_history.push(prev);
+                            if self.edit_history.len() > 200 {
+                                self.edit_history.remove(0);
+                            }
+                            self.edit_redo.clear();
+                        }
+                    }
+                    ed.perform(action);
+                    if edits {
+                        self.dirty = true;
+                    }
+                }
+                Task::none()
+            }
+            Message::EditorUndo => {
+                if let Some(ed) = self.editor.as_mut() {
+                    if let Some(prev) = self.edit_history.pop() {
+                        let current = ed.text();
+                        self.edit_redo.push(current);
+                        *ed = iced::widget::text_editor::Content::with_text(&prev);
+                        self.dirty = prev != self.source;
+                    }
+                }
+                Task::none()
+            }
+            Message::EditorRedo => {
+                if let Some(ed) = self.editor.as_mut() {
+                    if let Some(next) = self.edit_redo.pop() {
+                        let current = ed.text();
+                        self.edit_history.push(current);
+                        *ed = iced::widget::text_editor::Content::with_text(&next);
+                        self.dirty = next != self.source;
+                    }
+                }
+                Task::none()
+            }
+            Message::SaveFile => {
+                let Some(path) = self.file.clone() else { return Task::none() };
+                let text = match self.editor.as_ref() {
+                    Some(ed) => ed.text(),
+                    None => self.source.clone(),
+                };
+                self.source = text.clone();
+                self.reparse_source();
+                self.dirty = false;
+                Task::perform(
+                    async move {
+                        tokio::fs::write(&path, text).await.map_err(|e| e.to_string())
+                    },
+                    Message::FileSaved,
+                )
+            }
+            Message::FileSaved(Ok(())) => self.show_toast("✓ Saved".into()),
+            Message::FileSaved(Err(e)) => {
+                self.error = Some(format!("save failed: {e}"));
+                Task::none()
             }
             Message::OpenImageZoom(url) => {
                 let raster_task = match self.image_cache.get(&url) {
@@ -803,7 +916,12 @@ impl App {
                 }
                 if fetches.is_empty() { Task::none() } else { Task::batch(fetches) }
             }
-            Message::FileChanged(p) => Task::perform(load_file(p), Message::FileLoaded),
+            Message::FileChanged(p) => {
+                if self.dirty {
+                    return self.show_toast("External change ignored (unsaved edits)".into());
+                }
+                Task::perform(load_file(p), Message::FileLoaded)
+            }
             Message::OpenLink(url) => {
                 let _ = open::that_detached(&url);
                 Task::none()
@@ -1030,9 +1148,21 @@ impl App {
         let focused = self.search_open;
         let overlay_open = self.overlay != Overlay::None;
         let tree_active = self.sidebar_open && self.workspace.is_some();
-        let keys = iced::event::listen()
-            .with((focused, overlay_open, tree_active))
-            .map(|((focused, overlay_open, tree_active), ev)| {
+        let editing = self.view_mode == ViewMode::Raw && self.editor.is_some();
+        let keys = iced::event::listen_with(|ev, status, _id| {
+            let is_keyboard = matches!(&ev, iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { .. }));
+            if !is_keyboard {
+                return None;
+            }
+            // Always surface keyboard events even when a child widget captured them,
+            // so global shortcuts (Cmd+E, Cmd+S, Esc, etc.) still fire while the
+            // text_editor is focused. We rely on the sub handler's modifier-aware
+            // checks to avoid stealing plain typing keys.
+            let _ = status;
+            Some(ev)
+        })
+            .with((focused, overlay_open, tree_active, editing))
+            .map(|((focused, overlay_open, tree_active, editing), ev)| {
                 use iced::keyboard::{key::Named, Event as KEv, Key};
                 let (key, mods) = match ev {
                     iced::Event::Keyboard(KEv::KeyPressed { key, modifiers, .. }) => {
@@ -1050,6 +1180,10 @@ impl App {
                         "f" if cmd => return Message::ToggleSearch,
                         "t" if cmd => return Message::ToggleTheme,
                         "e" if cmd => return Message::ToggleViewMode,
+                        "s" if cmd => return Message::SaveFile,
+                        "z" if cmd && editing && mods.shift() => return Message::EditorRedo,
+                        "z" if cmd && editing => return Message::EditorUndo,
+                        "y" if cmd && editing => return Message::EditorRedo,
                         _ => {}
                     }
                 }
@@ -1080,6 +1214,9 @@ impl App {
                             Message::NextMatch
                         };
                     }
+                    return Message::Noop;
+                }
+                if editing {
                     return Message::Noop;
                 }
                 let m: Option<Message> = match key {
@@ -1167,11 +1304,33 @@ impl App {
                     .unwrap_or(0),
             };
             let body: Element<'_, Message> = if self.view_mode == ViewMode::Raw {
-                text(self.source.as_str())
-                    .font(iced::Font::MONOSPACE)
-                    .size(self.typography.code_size)
-                    .color(pal.fg)
-                    .into()
+                if let Some(ed) = self.editor.as_ref() {
+                    iced::widget::text_editor(ed)
+                        .on_action(Message::EditorAction)
+                        .font(iced::Font::MONOSPACE)
+                        .size(self.typography.code_size)
+                        .line_height(iced::widget::text::LineHeight::Relative(1.55))
+                        .height(Length::Fill)
+                        .padding(iced::Padding { top: 48.0, right: 32.0, bottom: 24.0, left: 64.0 })
+                        .style(move |_, _| iced::widget::text_editor::Style {
+                            background: pal.bg.into(),
+                            border: Border {
+                                color: iced::Color::TRANSPARENT,
+                                width: 0.0,
+                                radius: 0.0.into(),
+                            },
+                            placeholder: pal.subtle,
+                            value: pal.fg,
+                            selection: pal.selection,
+                        })
+                        .into()
+                } else {
+                    text(self.source.as_str())
+                        .font(iced::Font::MONOSPACE)
+                        .size(self.typography.code_size)
+                        .color(pal.fg)
+                        .into()
+                }
             } else {
                 crate::render::render(
                     &self.ast,
@@ -1184,22 +1343,33 @@ impl App {
                     self.file.as_deref(),
                 )
             };
-            scrollable(
-                container(
-                    container(body)
-                        .max_width(READING_MAX)
-                        .width(Length::Shrink),
+            if self.view_mode == ViewMode::Raw {
+                container(body)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .style(move |_| container::Style {
+                        background: Some(pal.bg.into()),
+                        ..Default::default()
+                    })
+                    .into()
+            } else {
+                scrollable(
+                    container(
+                        container(body)
+                            .max_width(READING_MAX)
+                            .width(Length::Shrink),
+                    )
+                    .padding(Padding::from([56, 32]))
+                    .center_x(Length::Fill)
+                    .width(Length::Fill),
                 )
-                .padding(Padding::from([56, 32]))
-                .center_x(Length::Fill)
-                .width(Length::Fill),
-            )
-            .id(Self::scroll_id())
-            .height(Length::Fill)
-            .on_scroll(Message::BodyScrolled)
-            .direction(slim_scroll_direction())
-            .style(move |_, status| sleek_scrollable_style(status, pal))
-            .into()
+                .id(Self::scroll_id())
+                .height(Length::Fill)
+                .on_scroll(Message::BodyScrolled)
+                .direction(slim_scroll_direction())
+                .style(move |_, status| sleek_scrollable_style(status, pal))
+                .into()
+            }
         };
 
         let reader_with_search: Element<'_, Message> = if self.search_open {
