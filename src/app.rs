@@ -1785,7 +1785,10 @@ fn welcome_view<'a>(pal: Palette) -> Element<'a, Message> {
                     },
                     ..Default::default()
                 }),
-            text(label).size(13).color(pal.muted),
+            text(label).size(13).color(pal.muted).font(iced::Font {
+                family: iced::font::Family::Name("JetBrains Mono"),
+                ..iced::Font::DEFAULT
+            }),
         ]
         .spacing(8)
         .align_y(iced::Alignment::Center)
