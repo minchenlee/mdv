@@ -1312,6 +1312,10 @@ impl App {
                         .line_height(iced::widget::text::LineHeight::Relative(1.55))
                         .height(Length::Fill)
                         .padding(iced::Padding { top: 48.0, right: 32.0, bottom: 24.0, left: 64.0 })
+                        .highlight_with::<crate::md_highlight::MdHighlighter>(
+                            crate::md_highlight::Settings { palette: pal },
+                            |hl, _theme| hl.to_format(),
+                        )
                         .style(move |_, _| iced::widget::text_editor::Style {
                             background: pal.bg.into(),
                             border: Border {
@@ -1381,6 +1385,7 @@ impl App {
         } else {
             reader.into()
         };
+
 
         let main_area: Element<'_, Message> = if self.sidebar_open && self.workspace.is_some() {
             irow![

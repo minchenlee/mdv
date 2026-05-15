@@ -65,7 +65,7 @@ impl ThemePreset {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Palette {
     pub bg: Color,
     pub surface: Color,
@@ -93,7 +93,7 @@ pub struct Palette {
 /// Per-theme syntax highlighting colors. Maps directly to `HlStyle` variants.
 /// Upstream-accurate values pulled from each theme's canonical spec — see the
 /// `// Source:` comment on each preset constant.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SyntaxPalette {
     pub keyword: Color,
     pub type_: Color,

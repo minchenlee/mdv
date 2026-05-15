@@ -3,6 +3,7 @@ pub mod app;
 pub mod ast;
 pub mod highlight;
 pub mod icon;
+pub mod md_highlight;
 pub mod parser;
 pub mod picker;
 pub mod recent;
