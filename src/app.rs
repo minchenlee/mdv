@@ -149,6 +149,8 @@ pub enum Message {
     OpenImageZoom(String),
     ToggleViewMode,
     HintSelection,
+    FoldChordStart,
+    FoldChordCancel,
     FoldToLevel(u8),
     ToggleFold(crate::ast::BlockId),
     HeadingHoverEnter(crate::ast::BlockId),
@@ -209,6 +211,7 @@ pub struct App {
     pub is_data_doc: bool,
     pub folded: HashSet<crate::ast::BlockId>,
     pub hovered_heading: Option<crate::ast::BlockId>,
+    pub fold_chord_pending: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -268,6 +271,7 @@ impl Default for App {
             is_data_doc: false,
             folded: HashSet::new(),
             hovered_heading: None,
+            fold_chord_pending: false,
         }
     }
 }
@@ -697,7 +701,16 @@ impl App {
             Message::HintSelection => {
                 return self.show_toast("Press ⌘E to edit & select text".into());
             }
+            Message::FoldChordStart => {
+                self.fold_chord_pending = true;
+                return self.show_toast("Fold: press 0-6 …".into());
+            }
+            Message::FoldChordCancel => {
+                self.fold_chord_pending = false;
+                Task::none()
+            }
             Message::FoldToLevel(n) => {
+                self.fold_chord_pending = false;
                 if self.is_data_doc {
                     return self.show_toast("Fold for data formats not yet supported".into());
                 }
@@ -1291,6 +1304,7 @@ impl App {
         let overlay_open = self.overlay != Overlay::None;
         let tree_active = self.sidebar_open && self.workspace.is_some();
         let editing = self.view_mode == ViewMode::Raw && self.editor.is_some();
+        let fold_chord = self.fold_chord_pending;
         let keys = iced::event::listen_with(|ev, status, _id| {
             let is_keyboard = matches!(&ev, iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { .. }));
             if !is_keyboard {
@@ -1303,8 +1317,8 @@ impl App {
             let _ = status;
             Some(ev)
         })
-            .with((focused, overlay_open, tree_active, editing))
-            .map(|((focused, overlay_open, tree_active, editing), ev)| {
+            .with((focused, overlay_open, tree_active, editing, fold_chord))
+            .map(|((focused, overlay_open, tree_active, editing, fold_chord), ev)| {
                 use iced::keyboard::{key::Named, Event as KEv, Key};
                 let (key, mods) = match ev {
                     iced::Event::Keyboard(KEv::KeyPressed { key, modifiers, .. }) => {
@@ -1313,18 +1327,22 @@ impl App {
                     _ => return Message::Noop,
                 };
                 let cmd = mods.command() || mods.control();
+                if fold_chord {
+                    if let Key::Character(c) = &key {
+                        if let Some(d) = c.chars().next().and_then(|ch| ch.to_digit(10)) {
+                            if d <= 6 {
+                                return Message::FoldToLevel(d as u8);
+                            }
+                        }
+                    }
+                    return Message::FoldChordCancel;
+                }
                 if let Key::Character(c) = &key {
                     match c.as_str() {
                         "p" if cmd && mods.shift() => return Message::OpenCommandPalette,
                         "P" if cmd => return Message::OpenCommandPalette,
                         "p" if cmd => return Message::OpenFileFinder,
-                        "0" if cmd => return Message::FoldToLevel(0),
-                        "1" if cmd => return Message::FoldToLevel(1),
-                        "2" if cmd => return Message::FoldToLevel(2),
-                        "3" if cmd => return Message::FoldToLevel(3),
-                        "4" if cmd => return Message::FoldToLevel(4),
-                        "5" if cmd => return Message::FoldToLevel(5),
-                        "6" if cmd => return Message::FoldToLevel(6),
+                        "k" if cmd => return Message::FoldChordStart,
                         "o" if cmd => return Message::OpenFolderPicker,
                         "b" if cmd => return Message::ToggleSidebar,
                         "f" if cmd => return Message::ToggleSearch,
@@ -1784,6 +1802,7 @@ fn welcome_view<'a>(pal: Palette) -> Element<'a, Message> {
             kbd("Find in Document", "⌘F"),
             kbd("Cycle Theme", "⌘T"),
             kbd("Edit / Select Text", "⌘E"),
+            kbd("Fold to Level (then 0–6)", "⌘K"),
         ]
         .spacing(8)
         .align_x(iced::Alignment::Start)
