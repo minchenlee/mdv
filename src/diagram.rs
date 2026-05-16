@@ -16,6 +16,21 @@ use iced::widget::image;
 use iced::Color;
 use tokio::sync::Semaphore;
 
+/// System font database used by `usvg` when rasterizing diagram SVGs.
+/// Lazy because `load_system_fonts()` takes ~200-300ms on macOS and we
+/// don't want to pay it until the first diagram renders. Shared via Arc
+/// so each `usvg::Options` clones a cheap handle.
+static USVG_FONTDB: LazyLock<Arc<resvg::usvg::fontdb::Database>> = LazyLock::new(|| {
+    let mut db = resvg::usvg::fontdb::Database::new();
+    db.load_system_fonts();
+    // Sensible defaults so mermaid/dot's generic family names resolve
+    // even on systems where 'system-ui' / 'sans-serif' aren't registered.
+    db.set_sans_serif_family("Helvetica");
+    db.set_serif_family("Times");
+    db.set_monospace_family("Menlo");
+    Arc::new(db)
+});
+
 /// Cap on concurrent diagram renders. Each render acquires one permit before
 /// dispatching to `spawn_blocking`. Prevents many simultaneous renders from
 /// saturating the blocking thread pool while the UI thread tries to redraw.
@@ -270,7 +285,8 @@ fn rasterize_for_inline(svg_bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String>
     use resvg::usvg;
     const MAX_WIDTH: f32 = 1600.0;
 
-    let opt = usvg::Options::default();
+    let mut opt = usvg::Options::default();
+    opt.fontdb = USVG_FONTDB.clone();
     let tree = usvg::Tree::from_data(svg_bytes, &opt).map_err(|e| e.to_string())?;
     let sz = tree.size();
     let (w, h) = (sz.width(), sz.height());
