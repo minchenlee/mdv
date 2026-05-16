@@ -120,6 +120,8 @@ pub enum Message {
     PickerParent,
     PickerHome,
     PickerSelectFolderHere,
+    /// Picker chose a file: open it AND select its parent as workspace.
+    PickerOpenFile(PathBuf),
     OverlayQueryChanged(String),
     OverlayMove(isize),
     OverlayConfirm,
@@ -679,7 +681,7 @@ impl App {
                     .as_ref()
                     .and_then(|p| p.parent().map(|x| x.to_path_buf()))
             });
-            self.picker = Some(Picker::new(start, PickerMode::Folder, self.show_hidden));
+            self.picker = Some(Picker::new(start, PickerMode::OpenAny, self.show_hidden));
         } else {
             self.picker = None;
         }
@@ -1333,6 +1335,16 @@ impl App {
                 if let Some(pk) = self.picker.as_mut() {
                     if p.is_dir() {
                         pk.navigate_to(p);
+                        self.overlay_selected = 0;
+                        // Leaf folder (no subfolders, readable): treat the
+                        // navigation as a workspace pick. Saves the user an
+                        // extra Space/Enter on dead-end folders.
+                        if pk.entries.is_empty() && pk.error.is_none() {
+                            let cwd = pk.cwd.clone();
+                            self.overlay = Overlay::None;
+                            self.picker = None;
+                            return Task::done(Message::OpenWorkspace(cwd));
+                        }
                     }
                 }
                 Task::none()
@@ -1359,6 +1371,17 @@ impl App {
                 }
                 Task::none()
             }
+            Message::PickerOpenFile(path) => {
+                self.overlay = Overlay::None;
+                self.picker = None;
+                let parent = path.parent().map(|p| p.to_path_buf());
+                let load = Task::perform(load_file(path), Message::FileLoaded);
+                if let Some(parent) = parent {
+                    Task::batch([Task::done(Message::OpenWorkspace(parent)), load])
+                } else {
+                    load
+                }
+            }
             Message::OverlayQueryChanged(q) => {
                 self.overlay_query = q;
                 self.overlay_selected = 0;
@@ -1377,9 +1400,8 @@ impl App {
                 if len == 0 {
                     return Task::none();
                 }
-                let len = len as isize;
-                self.overlay_selected =
-                    ((self.overlay_selected as isize + d).rem_euclid(len)) as usize;
+                let next = (self.overlay_selected as isize + d).clamp(0, len as isize - 1);
+                self.overlay_selected = next as usize;
                 self.scroll_overlay_to_cursor()
             }
             Message::OverlayConfirm => match self.overlay {
@@ -1415,9 +1437,7 @@ impl App {
                                 self.picker = None;
                                 return Task::done(Message::OpenWorkspace(e.path));
                             } else if e.is_md {
-                                self.overlay = Overlay::None;
-                                self.picker = None;
-                                return Task::perform(load_file(e.path), Message::FileLoaded);
+                                return Task::done(Message::PickerOpenFile(e.path));
                             }
                         }
                     }
@@ -1432,8 +1452,22 @@ impl App {
                             if e.is_dir {
                                 pk.navigate_to(e.path);
                                 self.overlay_selected = 0;
+                                // Leaf folder: auto-open as workspace.
+                                if pk.entries.is_empty() && pk.error.is_none() {
+                                    let cwd = pk.cwd.clone();
+                                    self.overlay = Overlay::None;
+                                    self.picker = None;
+                                    return Task::done(Message::OpenWorkspace(cwd));
+                                }
                                 return self.scroll_overlay_to_cursor();
+                            } else if e.is_md {
+                                return Task::done(Message::PickerOpenFile(e.path));
                             }
+                        } else if pk.entries.is_empty() && pk.error.is_none() {
+                            let cwd = pk.cwd.clone();
+                            self.overlay = Overlay::None;
+                            self.picker = None;
+                            return Task::done(Message::OpenWorkspace(cwd));
                         }
                     }
                 }
@@ -2006,7 +2040,7 @@ impl App {
                     Key::Named(Named::ArrowDown) if tree_active => Some(Message::TreeMove(1)),
                     Key::Named(Named::ArrowUp) if tree_active => Some(Message::TreeMove(-1)),
                     Key::Named(Named::Enter) if tree_active => Some(Message::TreeActivate),
-                    Key::Named(Named::Space) if tree_active => Some(Message::TreeToggleAtCursor),
+                    Key::Named(Named::Space) if tree_active => Some(Message::TreeActivate),
                     Key::Named(Named::ArrowDown) if mods.command() => Some(Message::ScrollToBottom),
                     Key::Named(Named::ArrowUp) if mods.command() => Some(Message::ScrollToTop),
                     Key::Named(Named::ArrowDown) => Some(Message::ScrollBy(40.0)),
@@ -2283,12 +2317,26 @@ impl App {
         };
 
         let main_area: Element<'_, Message> = if self.sidebar_open && self.workspace.is_some() {
+            // View panel paints its own rounded background. iced 0.14 doesn't
+            // mask child draws to the radius, but background fill does respect
+            // it — so the corner pixels outside the radius are transparent and
+            // show the sidebar-colored area behind. Reader content has enough
+            // padding that no text falls into the corner curve.
             irow![
                 sidebar_view(self, pal),
                 sidebar_resize_handle(pal),
                 container(reader_with_search)
                     .width(Length::Fill)
-                    .height(Length::Fill),
+                    .height(Length::Fill)
+                    .style(move |_| container::Style {
+                        background: Some(pal.bg.into()),
+                        border: Border {
+                            color: Color::TRANSPARENT,
+                            width: 0.0,
+                            radius: iced::border::top_left(24),
+                        },
+                        ..Default::default()
+                    }),
             ]
             .into()
         } else {
@@ -2298,9 +2346,17 @@ impl App {
                 .into()
         };
 
+        // When the sidebar is open, the area "behind" the view panel's rounded
+        // top-left corner needs to look like sidebar, so the cutout pixels
+        // outside the reader's rounded background pick up sidebar color.
+        let main_bg = if self.sidebar_open && self.workspace.is_some() {
+            pal.sidebar
+        } else {
+            pal.bg
+        };
         let main = container(main_area)
             .style(move |_| container::Style {
-                background: Some(pal.bg.into()),
+                background: Some(main_bg.into()),
                 ..Default::default()
             })
             .width(Length::Fill)
@@ -2672,27 +2728,51 @@ fn sidebar_view<'a>(app: &'a App, pal: Palette) -> Element<'a, Message> {
                 iced::widget::tooltip::Position::Bottom,
             ),
         ]
-        .padding(Padding::from([10, 14]))
+        .padding(sidebar_header_padding())
         .spacing(6)
         .align_y(iced::Alignment::Center),
     )
     .width(Length::Fill);
 
+    // Measure longest row so we can pin the Column to a Fixed width. With
+    // `Direction::Both`, an unsized Column collapses to its widest *Shrink*
+    // child — which would shrink the selection ring to text width. Setting an
+    // explicit width lets each row's `Length::Fill` stretch to it, giving a
+    // full-width focus ring AND horizontal scroll when names overflow.
+    // Approach mirrors Zed's project panel.
     let mut list = Column::new().spacing(0).padding(Padding::from([4, 4]));
+    let mut content_w = app.sidebar_width - 12.0; // minus scrollbar gutter
     if let Some(tree_root) = &app.workspace_tree {
         let rows = tree::flatten(tree_root, &app.expanded);
         let current = app.file.as_ref();
         let cursor = app.tree_cursor;
+        for r in rows.iter() {
+            let w = tree_row_width(r.node, r.depth);
+            if w > content_w {
+                content_w = w;
+            }
+        }
         for (i, r) in rows.iter().enumerate() {
             let row_el = tree_row(r.node, r.depth, &app.expanded, current, i == cursor, pal);
             list = list.push(row_el);
         }
     }
-    let body = scrollable(list)
+    let list = list.width(Length::Fixed(content_w));
+    // Nested single-axis scrollables: inner handles vertical, outer handles
+    // horizontal. Iced 0.14's `Direction::Both` allows diagonal scrolling,
+    // which feels wrong for file trees — Zed and VS Code lock to one axis at
+    // a time. Splitting them lets macOS trackpad gestures route naturally:
+    // dominant-Y events hit the inner, dominant-X events bubble to the outer.
+    let inner = scrollable(list)
         .id(App::tree_scroll_id())
+        .width(Length::Fixed(content_w))
         .height(Length::Fill)
         .on_scroll(Message::TreeScrolled)
         .direction(slim_scroll_direction())
+        .style(move |_, status| sleek_scrollable_style(status, pal, recently_scrolled));
+    let body = scrollable(inner)
+        .height(Length::Fill)
+        .direction(slim_scroll_direction_horizontal())
         .style(move |_, status| sleek_scrollable_style(status, pal, recently_scrolled));
 
     container(column![header, body])
@@ -2737,6 +2817,21 @@ fn sidebar_resize_handle<'a>(pal: Palette) -> Element<'a, Message> {
     .on_press(Message::SidebarDragStart)
     .on_release(Message::SidebarDragEnd)
     .into()
+}
+
+/// Estimate the pixel width a [`tree_row`] needs at the given depth. Used to
+/// size the surrounding Column so the focus ring fills the sidebar width AND
+/// horizontal scroll kicks in when names overflow. Approximation uses an
+/// average advance for Inter @ 13px; exact metrics aren't worth the cost of a
+/// glyph-shaping pass on every render.
+fn tree_row_width(node: &Node, depth: usize) -> f32 {
+    const CHAR_ADVANCE: f32 = 7.0;
+    let indent = TREE_INDENT * depth as f32;
+    let chevron = 14.0;
+    let leaf = 13.0 + 4.0 + 7.0; // icon + gap before + gap after
+    let label = node.name.chars().count() as f32 * CHAR_ADVANCE;
+    let padding_h = 16.0; // button padding 8 each side
+    indent + chevron + leaf + label + padding_h
 }
 
 fn tree_row<'a>(
@@ -2981,9 +3076,15 @@ fn folder_picker_overlay<'a>(
                 let is_sel = i == selected;
                 let path_clone = e.path.clone();
                 let name = e.name.clone();
+                let glyph = if e.is_dir { ic::FOLDER } else { ic::FILE_TEXT };
+                let on_press = if e.is_dir {
+                    Message::PickerNavigate(path_clone)
+                } else {
+                    Message::PickerOpenFile(path_clone)
+                };
                 let row = button(
                     irow![
-                        icon::glyph(ic::FOLDER, 13.0, pal.subtle),
+                        icon::glyph(glyph, 13.0, pal.subtle),
                         text(name).size(13).color(pal.fg),
                     ]
                     .spacing(10)
@@ -3005,7 +3106,7 @@ fn folder_picker_overlay<'a>(
                     },
                     ..Default::default()
                 })
-                .on_press(Message::PickerNavigate(path_clone));
+                .on_press(on_press);
                 list = list.push(row);
             }
         }
@@ -3014,9 +3115,10 @@ fn folder_picker_overlay<'a>(
             .height(Length::Fill)
             .on_scroll(Message::OverlayScrolled)
             .direction(slim_scroll_direction())
-            .style(move |_, status| sleek_scrollable_style(status, pal, false));
+            .style(move |_, status| sleek_scrollable_style(status, pal, true));
 
-        column![header, body].into()
+        let footer = picker_hint_footer(pal);
+        column![header, body, footer].into()
     } else {
         text("No picker").into()
     };
@@ -3094,7 +3196,7 @@ fn file_finder_overlay<'a>(
         .on_scroll(Message::OverlayScrolled)
         .height(Length::Fill)
         .direction(slim_scroll_direction())
-        .style(move |_, status| sleek_scrollable_style(status, pal, false));
+        .style(move |_, status| sleek_scrollable_style(status, pal, true));
 
     let divider = container(Space::new().height(1.0))
         .width(Length::Fill)
@@ -3162,7 +3264,7 @@ fn command_overlay<'a>(
         .on_scroll(Message::OverlayScrolled)
         .height(Length::Fill)
         .direction(slim_scroll_direction())
-        .style(move |_, status| sleek_scrollable_style(status, pal, false));
+        .style(move |_, status| sleek_scrollable_style(status, pal, true));
 
     let divider = container(Space::new().height(1.0))
         .width(Length::Fill)
@@ -3274,7 +3376,7 @@ fn theme_overlay<'a>(
         .on_scroll(Message::OverlayScrolled)
         .height(Length::Fill)
         .direction(slim_scroll_direction())
-        .style(move |_, status| sleek_scrollable_style(status, pal, false));
+        .style(move |_, status| sleek_scrollable_style(status, pal, true));
 
     let divider = container(Space::new().height(1.0))
         .width(Length::Fill)
@@ -3284,6 +3386,55 @@ fn theme_overlay<'a>(
         });
 
     overlay_frame(column![input, divider, body].into(), pal, 480.0, 420.0)
+}
+
+fn picker_hint_footer<'a>(pal: Palette) -> Element<'a, Message> {
+    let hint = |k: &'static str, label: &'static str| -> Element<'a, Message> {
+        irow![
+            container(text(k).size(11).color(pal.fg))
+                .padding(Padding::from([2, 6]))
+                .style(move |_| container::Style {
+                    background: Some(pal.surface_alt.into()),
+                    border: Border {
+                        color: pal.rule,
+                        width: 1.0,
+                        radius: 4.0.into(),
+                    },
+                    ..Default::default()
+                }),
+            Space::new().width(6),
+            text(label).size(11).color(pal.subtle),
+        ]
+        .align_y(iced::Alignment::Center)
+        .into()
+    };
+    let divider = container(Space::new().height(1.0))
+        .width(Length::Fill)
+        .style(move |_| container::Style {
+            background: Some(pal.rule.into()),
+            ..Default::default()
+        });
+    let row = irow![
+        hint("↑↓", "navigate"),
+        Space::new().width(14),
+        hint("←", "up"),
+        Space::new().width(14),
+        hint("→", "descend"),
+        Space::new().width(14),
+        hint("␣", "descend / open"),
+        Space::new().width(14),
+        hint("↵", "open"),
+        Space::new().width(Length::Fill),
+        hint("⎋", "close"),
+    ]
+    .align_y(iced::Alignment::Center);
+    column![
+        divider,
+        container(row)
+            .padding(Padding::from([8, 14]))
+            .width(Length::Fill),
+    ]
+    .into()
 }
 
 fn overlay_frame<'a>(
@@ -3339,6 +3490,39 @@ fn slim_scroll_direction() -> scrollable::Direction {
             .scroller_width(6.0)
             .margin(2.0),
     )
+}
+
+fn slim_scroll_direction_horizontal() -> scrollable::Direction {
+    scrollable::Direction::Horizontal(
+        scrollable::Scrollbar::new()
+            .width(6.0)
+            .scroller_width(6.0)
+            .margin(2.0),
+    )
+}
+
+/// Sidebar header padding. On macOS we use `fullsize_content_view`, so the
+/// traffic-light buttons overlay the top-left of the client area whenever the
+/// window is not fullscreen. Iced 0.14 exposes no way to query the current
+/// window mode, so we always reserve room for the buttons here — when truly
+/// fullscreen the extra ~22px of leading space is unused but harmless.
+fn sidebar_header_padding() -> Padding {
+    #[cfg(target_os = "macos")]
+    {
+        // Traffic-light buttons sit ~6px from top, ~12px tall → reserve top
+        // ~22px to vertically center the label with them. Left ~72px clears
+        // the third button + a small gutter.
+        Padding {
+            top: 22.0,
+            right: 14.0,
+            bottom: 8.0,
+            left: 72.0,
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Padding::from([10, 14])
+    }
 }
 
 fn sleek_scrollable_style(
