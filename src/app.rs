@@ -185,6 +185,10 @@ pub enum Message {
     FileSaved(Result<(), String>),
     EditorUndo,
     EditorRedo,
+    /// T3 stub — T4 will implement (zoom diagram into a full-window viewer).
+    DiagramZoom(u64),
+    /// T3 stub — T4 will implement (copy diagram source to clipboard).
+    CopyDiagramSource(String),
     Noop,
 }
 
@@ -243,6 +247,12 @@ pub struct App {
     pub mindmap_panel_width: f32,
     pub mindmap_panel_drag: Option<(f32, Option<f32>)>,
     pub mindmap_autocenter: bool,
+    /// T3 — diagram render cache. T4 will populate it from a pre-walk +
+    /// `iced::Task::perform` of `diagram::render_blocking`.
+    pub diagram_cache: crate::diagram::DiagramCache,
+    /// T3 — stable digest of the current palette. T4 will refresh this on
+    /// theme change so cached SVGs are invalidated.
+    pub diagram_theme_id: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -309,6 +319,8 @@ impl Default for App {
             mindmap_panel_width: MIND_PANEL_DEFAULT,
             mindmap_panel_drag: None,
             mindmap_autocenter: true,
+            diagram_cache: crate::diagram::DiagramCache::new(64),
+            diagram_theme_id: 0,
         }
     }
 }
@@ -651,6 +663,8 @@ impl App {
                             self.file.as_deref(),
                             &self.folded,
                             self.hovered_heading,
+                            &self.diagram_cache,
+                            self.diagram_theme_id,
                         ));
                         if truncated {
                             col = col.push(
@@ -1606,6 +1620,8 @@ impl App {
                 let toast = self.show_toast("Copied".into());
                 Task::batch([iced::clipboard::write::<Message>(s), toast])
             }
+            // T3 stubs — implemented in T4.
+            Message::DiagramZoom(_) | Message::CopyDiagramSource(_) => Task::none(),
             Message::SidebarDragStart => {
                 self.sidebar_drag = Some(self.sidebar_width);
                 Task::none()
@@ -1983,6 +1999,8 @@ impl App {
                         self.file.as_deref(),
                         &self.folded,
                         self.hovered_heading,
+                        &self.diagram_cache,
+                        self.diagram_theme_id,
                     )
                 }
             } else {
@@ -1997,6 +2015,8 @@ impl App {
                     self.file.as_deref(),
                     &self.folded,
                     self.hovered_heading,
+                    &self.diagram_cache,
+                    self.diagram_theme_id,
                 )
             };
             if self.view_mode == ViewMode::Raw || self.view_mode == ViewMode::Mindmap {

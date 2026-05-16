@@ -31,4 +31,6 @@ pub mod ic {
     pub const COMMAND: char = '\u{e09a}';
     pub const PANEL_LEFT: char = '\u{e12a}';
     pub const COPY: char = '\u{e09e}';
+    /// Lucide "maximize" — used for diagram hover-zoom affordance.
+    pub const ZOOM: char = '\u{e1a1}';
 }

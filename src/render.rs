@@ -1,7 +1,8 @@
 use crate::app::{ImageState, Message};
 use crate::ast::{Block, BlockId, Inline, ListItem};
+use crate::diagram::{DiagramCache, DiagramState};
 use crate::theme::{Palette, Typography};
-use iced::widget::{container, image as image_widget, mouse_area, rich_text, row, span, stack, svg as svg_widget, text, Column, Space};
+use iced::widget::{container, image as image_widget, mouse_area, rich_text, row, span, stack, svg as svg_widget, text, tooltip, Column, Space};
 use iced::{Element, Length, Padding};
 use std::collections::HashMap;
 use std::path::Path;
@@ -24,13 +25,15 @@ pub fn render<'a>(
     current_file: Option<&'a Path>,
     folded: &std::collections::HashSet<BlockId>,
     hovered_heading: Option<BlockId>,
+    diagram_cache: &'a DiagramCache,
+    diagram_theme_id: u32,
 ) -> Element<'a, Message> {
     // Virt scroll disabled: rebuilding the visible-window Element tree on
     // every scroll event causes per-frame rich_text reflow jank in Iced 0.13.
     // Full render lets Iced's scrollable handle scrolling internally without
     // re-emitting the body tree per delta.
     let _ = (viewport, cache);
-    let img_ctx = ImgCtx { cache: image_cache, current_file };
+    let img_ctx = ImgCtx { cache: image_cache, current_file, diagram_cache, diagram_theme_id };
     let mut col = Column::new().spacing(14);
     let mut fold_until: Option<u8> = None;
     for (idx, (id, b)) in blocks.iter().enumerate() {
@@ -82,7 +85,8 @@ fn render_heading_with_chevron<'a>(
     visible: bool,
 ) -> Element<'a, Message> {
     let cache = EMPTY_IMG_CACHE.get_or_init(HashMap::new);
-    let img = ImgCtx { cache, current_file: None };
+    let dcache = EMPTY_DIAGRAM_CACHE.get_or_init(|| DiagramCache::new(1));
+    let img = ImgCtx { cache, current_file: None, diagram_cache: dcache, diagram_theme_id: 0 };
     let head = render_block(b, pal, typ, query, current_in_block, &img);
     let glyph = if folded { crate::icon::ic::CHEVRON_RIGHT } else { crate::icon::ic::CHEVRON_DOWN };
     let color = if visible { pal.muted } else { iced::Color::TRANSPARENT };
@@ -108,6 +112,7 @@ fn render_heading_with_chevron<'a>(
 }
 
 static EMPTY_IMG_CACHE: std::sync::OnceLock<HashMap<String, ImageState>> = std::sync::OnceLock::new();
+static EMPTY_DIAGRAM_CACHE: std::sync::OnceLock<DiagramCache> = std::sync::OnceLock::new();
 
 pub fn data_view<'a>(
     code: &'a str,
@@ -425,6 +430,8 @@ fn colorize_toml(code: &str, pal: &Palette) -> Vec<(std::ops::Range<usize>, iced
 struct ImgCtx<'a> {
     cache: &'a HashMap<String, ImageState>,
     current_file: Option<&'a Path>,
+    diagram_cache: &'a DiagramCache,
+    diagram_theme_id: u32,
 }
 
 fn render_block<'a>(
@@ -534,28 +541,8 @@ fn render_block<'a>(
                 })
                 .into()
         }
-        Block::Diagram { source, .. } => {
-            // T1 placeholder: render the diagram source as a plain code block.
-            // T3 will replace this with a real renderer.
-            let pal_c = *pal;
-            let body = container(
-                text(source.as_str())
-                    .font(iced::Font::MONOSPACE)
-                    .size(typ.code_size)
-                    .color(pal_c.fg),
-            )
-            .padding(Padding::from(14))
-            .style(move |_| container::Style {
-                background: Some(pal_c.code_bg.into()),
-                border: iced::Border {
-                    color: pal_c.code_border,
-                    width: 1.0,
-                    radius: 8.0.into(),
-                },
-                ..Default::default()
-            })
-            .width(Length::Fill);
-            body.into()
+        Block::Diagram { source, hash, .. } => {
+            render_diagram(*hash, source, pal, typ, img)
         }
         Block::List { ordered, items } => render_list(*ordered, items, pal, typ, &mut ctx, img),
         Block::Table { headers, rows } => render_table(headers, rows, pal, typ, &mut ctx),
@@ -797,6 +784,188 @@ fn render_image<'a>(
             _ => placeholder(format!("[image missing: {alt} ({url})]")),
         }
     }
+}
+
+/// Render a `Block::Diagram`. Looks up `(hash, theme_id)` in the cache.
+///
+/// - `Ready` → `iced::svg` with a hover overlay (zoom + copy icons).
+/// - `Pending` / cache miss → faded source code block + "rendering" chip.
+/// - `Err(msg)` → source code block + error chip wrapped in a tooltip.
+///
+/// T4 owns task dispatch; this function never kicks off a render.
+fn render_diagram<'a>(
+    hash: u64,
+    source: &'a str,
+    pal: &Palette,
+    typ: &Typography,
+    img: &ImgCtx<'a>,
+) -> Element<'a, Message> {
+    let key = (hash, img.diagram_theme_id);
+    let state = img.diagram_cache.peek(&key);
+
+    match state {
+        Some(DiagramState::Ready { handle, .. }) => {
+            let pal_c = *pal;
+            let svg_el = svg_widget(handle.clone())
+                .width(Length::Fill)
+                .height(Length::Shrink);
+            let body = container(svg_el)
+                .padding(Padding::from(10))
+                .max_height(600.0)
+                .width(Length::Fill)
+                .style(move |_| container::Style {
+                    background: Some(pal_c.code_bg.into()),
+                    border: iced::Border {
+                        color: pal_c.code_border,
+                        width: 1.0,
+                        radius: 8.0.into(),
+                    },
+                    ..Default::default()
+                });
+            // Whole-area click → zoom (mirrors image click-to-zoom UX).
+            let clickable = mouse_area(body)
+                .interaction(iced::mouse::Interaction::Pointer)
+                .on_press(Message::DiagramZoom(hash));
+
+            // Hover overlay — zoom + copy. Mirrors the CodeBlock copy-button
+            // styling (background = code_bg, border = code_border). The
+            // CodeBlock copy button is always visible, so for parity ours is
+            // too; per-hover visibility would require a hover-tracking state
+            // T4 owns.
+            let zoom_icon = container(
+                crate::icon::glyph(crate::icon::ic::ZOOM, 13.0, pal_c.muted),
+            )
+            .padding(Padding::from([4, 6]))
+            .style(move |_| container::Style {
+                background: Some(pal_c.code_bg.into()),
+                border: iced::Border {
+                    color: pal_c.code_border,
+                    width: 1.0,
+                    radius: 6.0.into(),
+                },
+                ..Default::default()
+            });
+            let copy_icon = container(
+                crate::icon::glyph(crate::icon::ic::COPY, 13.0, pal_c.muted),
+            )
+            .padding(Padding::from([4, 6]))
+            .style(move |_| container::Style {
+                background: Some(pal_c.code_bg.into()),
+                border: iced::Border {
+                    color: pal_c.code_border,
+                    width: 1.0,
+                    radius: 6.0.into(),
+                },
+                ..Default::default()
+            });
+            let zoom_btn = mouse_area(zoom_icon)
+                .interaction(iced::mouse::Interaction::Pointer)
+                .on_press(Message::DiagramZoom(hash));
+            let source_owned = source.to_string();
+            let copy_btn = mouse_area(copy_icon)
+                .interaction(iced::mouse::Interaction::Pointer)
+                .on_press(Message::CopyDiagramSource(source_owned));
+            let overlay = container(
+                row![zoom_btn, copy_btn].spacing(6),
+            )
+            .padding(Padding::from([6, 8]))
+            .align_x(iced::alignment::Horizontal::Right)
+            .width(Length::Fill);
+            stack![clickable, overlay].into()
+        }
+        Some(DiagramState::Err(msg)) => {
+            let body = source_code_block(source, pal, typ, 1.0);
+            let chip = chip(pal, "⚠ error", pal.fg);
+            let overlay = container(chip)
+                .padding(Padding::from([6, 8]))
+                .align_x(iced::alignment::Horizontal::Right)
+                .align_y(iced::alignment::Vertical::Bottom)
+                .width(Length::Fill)
+                .height(Length::Fill);
+            let stacked: Element<'_, Message> = stack![body, overlay].into();
+            tooltip(
+                stacked,
+                container(text(msg.clone()).color(pal.fg).size(12))
+                    .padding(Padding::from([4, 8]))
+                    .style({
+                        let pal_t = *pal;
+                        move |_| container::Style {
+                            background: Some(pal_t.surface_alt.into()),
+                            border: iced::Border {
+                                color: pal_t.rule,
+                                width: 1.0,
+                                radius: 5.0.into(),
+                            },
+                            ..Default::default()
+                        }
+                    }),
+                iced::widget::tooltip::Position::Top,
+            )
+            .into()
+        }
+        // Pending or cache miss.
+        _ => {
+            let body = source_code_block(source, pal, typ, 0.45);
+            let chip = chip(pal, "rendering…", pal.muted);
+            let overlay = container(chip)
+                .padding(Padding::from([6, 8]))
+                .align_x(iced::alignment::Horizontal::Right)
+                .align_y(iced::alignment::Vertical::Bottom)
+                .width(Length::Fill)
+                .height(Length::Fill);
+            stack![body, overlay].into()
+        }
+    }
+}
+
+/// Render a diagram's raw source as a monospace block — mirrors the
+/// `Block::CodeBlock` container styling. `opacity` is currently used only as
+/// a hint for color fade (Iced 0.14 has no widget-level opacity); we fold it
+/// into the text color alpha so Pending sources read as visually faded.
+fn source_code_block<'a>(
+    source: &'a str,
+    pal: &Palette,
+    typ: &Typography,
+    opacity: f32,
+) -> Element<'a, Message> {
+    let pal_c = *pal;
+    let mut color = pal_c.fg;
+    color.a = (color.a * opacity).clamp(0.0, 1.0);
+    container(
+        text(source)
+            .font(iced::Font::MONOSPACE)
+            .size(typ.code_size)
+            .color(color),
+    )
+    .padding(Padding::from(14))
+    .style(move |_| container::Style {
+        background: Some(pal_c.code_bg.into()),
+        border: iced::Border {
+            color: pal_c.code_border,
+            width: 1.0,
+            radius: 8.0.into(),
+        },
+        ..Default::default()
+    })
+    .width(Length::Fill)
+    .into()
+}
+
+/// Small pill used by Pending / Err overlays.
+fn chip<'a>(pal: &Palette, label: &'a str, fg: iced::Color) -> Element<'a, Message> {
+    let pal_c = *pal;
+    container(text(label).size(11).color(fg))
+        .padding(Padding::from([2, 8]))
+        .style(move |_| container::Style {
+            background: Some(pal_c.surface_alt.into()),
+            border: iced::Border {
+                color: pal_c.rule,
+                width: 1.0,
+                radius: 4.0.into(),
+            },
+            ..Default::default()
+        })
+        .into()
 }
 
 fn render_list<'a>(

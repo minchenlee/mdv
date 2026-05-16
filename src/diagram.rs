@@ -57,6 +57,12 @@ impl DiagramCache {
         self.inner.get(key)
     }
 
+    /// Non-mutating lookup that does not bump LRU recency. Used by the render
+    /// path, which only has a `&self` borrow of the cache.
+    pub fn peek(&self, key: &(u64, u32)) -> Option<&DiagramState> {
+        self.inner.peek(key)
+    }
+
     pub fn put(&mut self, key: (u64, u32), value: DiagramState) {
         self.inner.put(key, value);
     }
