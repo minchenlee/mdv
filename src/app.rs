@@ -185,10 +185,18 @@ pub enum Message {
     FileSaved(Result<(), String>),
     EditorUndo,
     EditorRedo,
-    /// T3 stub — T4 will implement (zoom diagram into a full-window viewer).
+    /// Zoom a rendered diagram into the image-viewer overlay. Looks up the
+    /// `Ready` SVG bytes by content-hash and opens [`Overlay::ImageZoom`].
     DiagramZoom(u64),
-    /// T3 stub — T4 will implement (copy diagram source to clipboard).
+    /// Copy a diagram's raw source to the system clipboard.
     CopyDiagramSource(String),
+    /// Result of an async diagram render dispatched by `prime_diagram_cache`.
+    /// `theme_id` is the snapshot at dispatch time — stale results are dropped.
+    DiagramRendered {
+        hash: u64,
+        theme_id: u32,
+        result: Result<String, String>,
+    },
     Noop,
 }
 
@@ -250,9 +258,13 @@ pub struct App {
     /// T3 — diagram render cache. T4 will populate it from a pre-walk +
     /// `iced::Task::perform` of `diagram::render_blocking`.
     pub diagram_cache: crate::diagram::DiagramCache,
-    /// T3 — stable digest of the current palette. T4 will refresh this on
-    /// theme change so cached SVGs are invalidated.
+    /// Stable digest of the current palette. Refreshed on every theme change
+    /// so the diagram cache (keyed on `(hash, theme_id)`) is invalidated for
+    /// the new palette automatically.
     pub diagram_theme_id: u32,
+    /// SVG bytes of the diagram currently shown in the zoom overlay. `None`
+    /// when the overlay is showing a normal raster/svg image instead.
+    pub zoom_diagram: Option<std::sync::Arc<Vec<u8>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -321,6 +333,7 @@ impl Default for App {
             mindmap_autocenter: true,
             diagram_cache: crate::diagram::DiagramCache::new(64),
             diagram_theme_id: 0,
+            zoom_diagram: None,
         }
     }
 }
@@ -577,6 +590,55 @@ impl App {
         self.rebuild_matches();
     }
 
+    /// Walk the current AST and dispatch a background render for every
+    /// `Block::Diagram` whose `(hash, theme_id)` is not yet in the cache.
+    /// Inserts `Pending` placeholders so the render path doesn't re-dispatch
+    /// the same hash on every redraw. Returns a `Task::batch` of in-flight
+    /// render futures.
+    fn prime_diagram_cache(&mut self) -> Task<Message> {
+        let theme_id = self.diagram_theme_id;
+        let palette = self.palette;
+        // Editor font carries through to mermaid/dot output for visual parity.
+        let font_family = "JetBrains Mono".to_string();
+        // Dedupe by hash so duplicate diagram blocks share a single task.
+        let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        let mut tasks: Vec<Task<Message>> = Vec::new();
+        let mut pending_inserts: Vec<(u64, crate::ast::DiagramKind, String)> = Vec::new();
+        for (_id, b) in &self.ast {
+            if let Block::Diagram { hash, kind, source } = b {
+                if !seen.insert(*hash) {
+                    continue;
+                }
+                if self.diagram_cache.peek(&(*hash, theme_id)).is_some() {
+                    continue;
+                }
+                pending_inserts.push((*hash, kind.clone(), source.clone()));
+            }
+        }
+        for (hash, kind, source) in pending_inserts {
+            self.diagram_cache
+                .put((hash, theme_id), crate::diagram::DiagramState::Pending);
+            let ff = font_family.clone();
+            tasks.push(Task::perform(
+                crate::diagram::render_blocking_async(kind, source, palette, ff),
+                move |result| Message::DiagramRendered {
+                    hash,
+                    theme_id,
+                    result,
+                },
+            ));
+        }
+        if tasks.is_empty() {
+            Task::none()
+        } else {
+            Task::batch(tasks)
+        }
+    }
+
+    fn refresh_diagram_theme_id(&mut self) {
+        self.diagram_theme_id = crate::diagram::theme_id(&self.palette);
+    }
+
     fn rebuild_matches(&mut self) {
         self.matches = search::find_in_blocks(&self.ast, &self.query);
         self.match_idx = 0;
@@ -825,6 +887,7 @@ impl App {
                 self.overlay = Overlay::None;
                 self.picker = None;
                 self.zoom_url = None;
+                self.zoom_diagram = None;
                 if was_zoom {
                     self.restore_body_scroll()
                 } else {
@@ -1188,14 +1251,18 @@ impl App {
                 self.source = text.clone();
                 self.reparse_source();
                 self.dirty = false;
-                Task::perform(
-                    async move {
-                        tokio::fs::write(&path, text)
-                            .await
-                            .map_err(|e| e.to_string())
-                    },
-                    Message::FileSaved,
-                )
+                let prime = self.prime_diagram_cache();
+                Task::batch([
+                    Task::perform(
+                        async move {
+                            tokio::fs::write(&path, text)
+                                .await
+                                .map_err(|e| e.to_string())
+                        },
+                        Message::FileSaved,
+                    ),
+                    prime,
+                ])
             }
             Message::FileSaved(Ok(())) => self.show_toast("✓ Saved".into()),
             Message::FileSaved(Err(e)) => {
@@ -1233,6 +1300,7 @@ impl App {
                     _ => None,
                 };
                 self.zoom_url = Some(url);
+                self.zoom_diagram = None;
                 self.overlay = Overlay::ImageZoom;
                 let restore = self.restore_body_scroll();
                 match raster_task {
@@ -1390,9 +1458,12 @@ impl App {
                         }
                     }
                 }
+                self.refresh_diagram_theme_id();
+                let prime = self.prime_diagram_cache();
                 if fetches.is_empty() {
-                    Task::none()
+                    prime
                 } else {
+                    fetches.push(prime);
                     Task::batch(fetches)
                 }
             }
@@ -1420,13 +1491,17 @@ impl App {
                 if let Some(t) = typo {
                     self.typography = t;
                 }
-                self.show_toast(label)
+                self.refresh_diagram_theme_id();
+                let prime = self.prime_diagram_cache();
+                Task::batch([self.show_toast(label), prime])
             }
             Message::SetTheme(t) => {
                 self.theme_preset = t;
                 self.palette = theme::palette_for(t);
                 self.theme_id = theme::ThemeId::Preset(t);
-                self.show_toast(t.label().to_string())
+                self.refresh_diagram_theme_id();
+                let prime = self.prime_diagram_cache();
+                Task::batch([self.show_toast(t.label().to_string()), prime])
             }
             Message::SetCustomTheme(slug) => {
                 if let Some(t) = self.custom_themes.iter().find(|t| t.slug == slug) {
@@ -1434,7 +1509,9 @@ impl App {
                     self.typography = t.typography;
                     self.theme_id = theme::ThemeId::Custom(slug.clone());
                     let label = t.name.clone();
-                    self.show_toast(label)
+                    self.refresh_diagram_theme_id();
+                    let prime = self.prime_diagram_cache();
+                    Task::batch([self.show_toast(label), prime])
                 } else {
                     Task::none()
                 }
@@ -1455,7 +1532,15 @@ impl App {
                 if !errs.is_empty() {
                     self.error = Some(format!("theme load: {}", errs.join("; ")));
                 }
-                self.show_toast(format!("{n} custom theme{}", if n == 1 { "" } else { "s" }))
+                self.refresh_diagram_theme_id();
+                let prime = self.prime_diagram_cache();
+                Task::batch([
+                    self.show_toast(format!(
+                        "{n} custom theme{}",
+                        if n == 1 { "" } else { "s" }
+                    )),
+                    prime,
+                ])
             }
             Message::ThemeFilesChanged => {
                 let mut errs = Vec::new();
@@ -1479,7 +1564,7 @@ impl App {
                 if !errs.is_empty() {
                     self.error = Some(format!("theme load: {}", errs.join("; ")));
                 }
-                if active_changed {
+                let toast = if active_changed {
                     self.show_toast("theme reloaded".to_string())
                 } else if before != after {
                     self.show_toast(format!(
@@ -1488,6 +1573,13 @@ impl App {
                     ))
                 } else {
                     Task::none()
+                };
+                if active_changed {
+                    self.refresh_diagram_theme_id();
+                    let prime = self.prime_diagram_cache();
+                    Task::batch([toast, prime])
+                } else {
+                    toast
                 }
             }
             Message::ToastExpire(id) => {
@@ -1620,8 +1712,57 @@ impl App {
                 let toast = self.show_toast("Copied".into());
                 Task::batch([iced::clipboard::write::<Message>(s), toast])
             }
-            // T3 stubs — implemented in T4.
-            Message::DiagramZoom(_) | Message::CopyDiagramSource(_) => Task::none(),
+            Message::DiagramZoom(hash) => {
+                // Only zoom Ready diagrams. We have to scan all theme_id keys
+                // because cache may hold a stale entry under an old theme_id;
+                // we want the one matching the current palette.
+                let key = (hash, self.diagram_theme_id);
+                let bytes = match self.diagram_cache.peek(&key) {
+                    Some(crate::diagram::DiagramState::Ready { source_bytes, .. }) => {
+                        Some(source_bytes.clone())
+                    }
+                    _ => None,
+                };
+                if let Some(b) = bytes {
+                    self.zoom_diagram = Some(b);
+                    self.zoom_url = None;
+                    self.overlay = Overlay::ImageZoom;
+                    self.restore_body_scroll()
+                } else {
+                    Task::none()
+                }
+            }
+            Message::CopyDiagramSource(s) => {
+                let toast = self.show_toast("Copied".into());
+                Task::batch([iced::clipboard::write::<Message>(s), toast])
+            }
+            Message::DiagramRendered { hash, theme_id, result } => {
+                // Drop stale results — theme changed mid-render, or AST
+                // re-parsed away the source block.
+                if theme_id != self.diagram_theme_id {
+                    return Task::none();
+                }
+                let still_present = self.ast.iter().any(|(_, b)| matches!(
+                    b,
+                    Block::Diagram { hash: h, .. } if *h == hash
+                ));
+                if !still_present {
+                    return Task::none();
+                }
+                let state = match result {
+                    Ok(svg) => {
+                        let bytes = svg.into_bytes();
+                        let handle = iced::widget::svg::Handle::from_memory(bytes.clone());
+                        crate::diagram::DiagramState::Ready {
+                            handle,
+                            source_bytes: std::sync::Arc::new(bytes),
+                        }
+                    }
+                    Err(msg) => crate::diagram::DiagramState::Err(msg),
+                };
+                self.diagram_cache.put((hash, theme_id), state);
+                Task::none()
+            }
             Message::SidebarDragStart => {
                 self.sidebar_drag = Some(self.sidebar_width);
                 Task::none()
@@ -2101,9 +2242,12 @@ impl App {
                     pal,
                 )
             }
-            Overlay::ImageZoom => {
-                image_zoom_overlay(self.zoom_url.as_deref(), &self.image_cache, pal)
-            }
+            Overlay::ImageZoom => image_zoom_overlay(
+                self.zoom_url.as_deref(),
+                self.zoom_diagram.as_ref(),
+                &self.image_cache,
+                pal,
+            ),
         };
         let base: Element<'_, Message> =
             iced::widget::stack![Element::from(main), overlay_layer].into();
@@ -2140,6 +2284,7 @@ fn toast_overlay<'a>(text: &str, pal: Palette) -> Element<'a, Message> {
 
 fn image_zoom_overlay<'a>(
     url: Option<&'a str>,
+    diagram: Option<&std::sync::Arc<Vec<u8>>>,
     cache: &HashMap<String, ImageState>,
     pal: Palette,
 ) -> Element<'a, Message> {
@@ -2153,6 +2298,27 @@ fn image_zoom_overlay<'a>(
             .height(Length::Fill)
             .into()
     };
+    // Diagram overrides image source when set — DiagramZoom clears zoom_url.
+    if let Some(bytes) = diagram {
+        let handle = iced::widget::svg::Handle::from_memory((**bytes).clone());
+        let svg_el: Element<'a, Message> = iced::widget::svg(handle)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into();
+        let scrim = container(
+            container(svg_el)
+                .padding(24)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(move |_| container::Style {
+            background: Some(Color { a: 0.85, ..pal.bg }.into()),
+            ..Default::default()
+        });
+        return mouse_area(scrim).on_press(Message::CloseOverlay).into();
+    }
     let inner: Element<'a, Message> = match url {
         Some(u) => match cache.get(u) {
             Some(ImageState::Loaded(h)) => mk_viewer(h.clone()),

@@ -202,6 +202,20 @@ fn inject_dot_preamble(source: &str, preamble: &str) -> String {
     }
 }
 
+/// Async wrapper around [`render_blocking`] for `iced::Task::perform`. Owns
+/// its inputs and offloads to `tokio::task::spawn_blocking`, so the blocking
+/// renderer never stalls the runtime executor.
+pub async fn render_blocking_async(
+    kind: DiagramKind,
+    source: String,
+    palette: Palette,
+    font_family: String,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || render_blocking(kind, &source, &palette, &font_family))
+        .await
+        .unwrap_or_else(|_| Err("render task panicked".to_string()))
+}
+
 /// Blocking renderer. Wraps the inner work in `catch_unwind` so a panic in a
 /// third-party crate doesn't take down the UI thread.
 pub fn render_blocking(
