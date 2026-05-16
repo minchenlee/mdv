@@ -22,6 +22,7 @@ pub fn estimate_height(b: &Block) -> f32 {
             (code.lines().count().max(1) as f32) * CODE_LINE_PX + 16.0
         }
         Block::Image { .. } => 240.0,
+        Block::Diagram { .. } => 200.0,
         Block::Blockquote(blocks) => {
             blocks.iter().map(estimate_height).sum::<f32>() + BLOCK_GAP_PX
         }

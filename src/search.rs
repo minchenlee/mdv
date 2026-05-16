@@ -86,6 +86,10 @@ fn push_block_text(b: &Block, out: &mut String) {
             out.push_str(alt);
             out.push('\n');
         }
+        Block::Diagram { source, .. } => {
+            out.push_str(source);
+            out.push('\n');
+        }
         Block::Rule => {}
     }
 }

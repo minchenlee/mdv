@@ -1,4 +1,4 @@
-use crate::ast::{Block, BlockId, Inline, ListItem};
+use crate::ast::{Block, BlockId, DiagramKind, Inline, ListItem};
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
@@ -53,6 +53,11 @@ fn fmt_block_for_hash<H: Hasher>(b: &Block, h: &mut H) {
         Block::Table { headers, rows } => {
             for c in headers { for i in c { fmt_inline(i, h); } }
             for r in rows { for c in r { for i in c { fmt_inline(i, h); } } }
+        }
+        Block::Diagram { kind, source, hash } => {
+            std::mem::discriminant(kind).hash(h);
+            source.hash(h);
+            hash.hash(h);
         }
         Block::Rule => {}
     }
@@ -193,7 +198,27 @@ impl ParseState {
                 }
             }
             Frame::CodeBlock { lang, code } => {
-                self.push_block(Block::CodeBlock { lang, code, spans: Vec::new() });
+                match lang.as_deref() {
+                    Some("mermaid") => {
+                        let mut h = DefaultHasher::new();
+                        code.hash(&mut h);
+                        self.push_block(Block::Diagram {
+                            kind: DiagramKind::Mermaid,
+                            source: code,
+                            hash: h.finish(),
+                        });
+                    }
+                    Some("dot") | Some("graphviz") => {
+                        let mut h = DefaultHasher::new();
+                        code.hash(&mut h);
+                        self.push_block(Block::Diagram {
+                            kind: DiagramKind::Dot,
+                            source: code,
+                            hash: h.finish(),
+                        });
+                    }
+                    _ => self.push_block(Block::CodeBlock { lang, code, spans: Vec::new() }),
+                }
             }
             Frame::Table { headers, rows, .. } => {
                 self.push_block(Block::Table { headers, rows });

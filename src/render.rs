@@ -534,6 +534,29 @@ fn render_block<'a>(
                 })
                 .into()
         }
+        Block::Diagram { source, .. } => {
+            // T1 placeholder: render the diagram source as a plain code block.
+            // T3 will replace this with a real renderer.
+            let pal_c = *pal;
+            let body = container(
+                text(source.as_str())
+                    .font(iced::Font::MONOSPACE)
+                    .size(typ.code_size)
+                    .color(pal_c.fg),
+            )
+            .padding(Padding::from(14))
+            .style(move |_| container::Style {
+                background: Some(pal_c.code_bg.into()),
+                border: iced::Border {
+                    color: pal_c.code_border,
+                    width: 1.0,
+                    radius: 8.0.into(),
+                },
+                ..Default::default()
+            })
+            .width(Length::Fill);
+            body.into()
+        }
         Block::List { ordered, items } => render_list(*ordered, items, pal, typ, &mut ctx, img),
         Block::Table { headers, rows } => render_table(headers, rows, pal, typ, &mut ctx),
         Block::Image { url, alt } => render_image(url, alt, pal, img),

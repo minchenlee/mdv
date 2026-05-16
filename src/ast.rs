@@ -12,8 +12,12 @@ pub enum Block {
     List { ordered: bool, items: Vec<ListItem> },
     Table { headers: Vec<Vec<Inline>>, rows: Vec<Vec<Vec<Inline>>> },
     Image { url: String, alt: String },
+    Diagram { kind: DiagramKind, source: String, hash: u64 },
     Rule,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+pub enum DiagramKind { Mermaid, Dot }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub enum Inline {
