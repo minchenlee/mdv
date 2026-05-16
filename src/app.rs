@@ -2193,6 +2193,7 @@ fn block_text_bytes(block: &Block) -> usize {
             .map(|cells| inline_text_bytes(cells))
             .sum(),
         Block::Image { url, alt } => url.len().saturating_add(alt.len()),
+        Block::Diagram { source, .. } => source.len(),
         Block::Rule => 0,
     }
 }
