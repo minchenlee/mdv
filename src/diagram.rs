@@ -352,11 +352,40 @@ fn render_mermaid(source: &str, palette: &Palette, font_family: &str) -> Result<
         s
     };
 
-    mermaid_rs_renderer::render_with_options(
+    let svg = mermaid_rs_renderer::render_with_options(
         &prepared,
         mermaid_rs_renderer::RenderOptions::default(),
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+
+    // The renderer hardcodes a `<rect ... fill="#FFFFFF"/>` as the first
+    // child of <svg> for the SVG background. Strip it so the diagram is
+    // transparent and the app's container (or zoom-modal scrim) shows
+    // through. Cheap pattern match — the rect is always emitted at the
+    // start with the diagram's exact width/height.
+    Ok(strip_mermaid_white_bg(&svg))
+}
+
+fn strip_mermaid_white_bg(svg: &str) -> String {
+    // First `<rect ... fill="#FFFFFF"/>` immediately after the opening
+    // <svg ...> tag. We scan only the head to avoid touching real content.
+    let head_end = svg.find('>').map(|i| i + 1).unwrap_or(0);
+    let scan_end = (head_end + 600).min(svg.len());
+    let needle_start = "<rect ";
+    let needle_white = "fill=\"#FFFFFF\"";
+    if let Some(rel) = svg[head_end..scan_end].find(needle_start) {
+        let abs = head_end + rel;
+        if let Some(end_rel) = svg[abs..scan_end].find("/>") {
+            let abs_end = abs + end_rel + 2;
+            if svg[abs..abs_end].contains(needle_white) {
+                let mut out = String::with_capacity(svg.len() - (abs_end - abs));
+                out.push_str(&svg[..abs]);
+                out.push_str(&svg[abs_end..]);
+                return out;
+            }
+        }
+    }
+    svg.to_string()
 }
 
 fn render_dot(source: &str, palette: &Palette, font_family: &str) -> Result<String, String> {

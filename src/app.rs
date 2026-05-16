@@ -1907,7 +1907,7 @@ impl App {
                         "p" if cmd && mods.shift() => return Message::OpenCommandPalette,
                         "P" if cmd => return Message::OpenCommandPalette,
                         "p" if cmd => return Message::OpenFileFinder,
-                        "k" if cmd => return Message::FoldChordStart,
+                        "k" if cmd && !editing => return Message::FoldChordStart,
                         "o" if cmd => return Message::OpenFolderPicker,
                         "b" if cmd => return Message::ToggleSidebar,
                         "f" if cmd => return Message::ToggleSearch,
@@ -2127,6 +2127,25 @@ impl App {
                 if let Some(ed) = self.editor.as_ref() {
                     iced::widget::text_editor(ed)
                         .on_action(Message::EditorAction)
+                        // Filter cmd/ctrl combos so global shortcuts (⌘B, ⌘T,
+                        // ⌘E, ⌘K, ⌘M, ⌘P, ⌘O, etc.) don't ALSO get inserted
+                        // as text by the editor. Keep ⌘C/⌘X/⌘V/⌘A/⌘Z/⌘Y for
+                        // standard editor bindings — those have explicit
+                        // handlers upstream that we want to preserve.
+                        .key_binding(|kp| {
+                            let cmd_or_ctrl =
+                                kp.modifiers.command() || kp.modifiers.control();
+                            if cmd_or_ctrl {
+                                let keep = matches!(
+                                    kp.key.to_latin(kp.physical_key),
+                                    Some('c' | 'x' | 'v' | 'a' | 'z' | 'y')
+                                );
+                                if !keep {
+                                    return None;
+                                }
+                            }
+                            iced::widget::text_editor::Binding::from_key_press(kp)
+                        })
                         .font(editor_font())
                         .size(self.typography.code_size)
                         .line_height(iced::widget::text::LineHeight::Relative(1.55))
@@ -2360,7 +2379,7 @@ fn image_zoom_overlay<'a>(
     };
     let scrim = container(
         container(inner)
-            .padding(24)
+            .padding(8)
             .center_x(Length::Fill)
             .center_y(Length::Fill),
     )
