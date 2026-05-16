@@ -7,13 +7,19 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 pub use crate::ast::DiagramKind;
 use crate::theme::Palette;
 
-use iced::widget::svg;
+use iced::widget::{image, svg};
 use iced::Color;
+use tokio::sync::Semaphore;
+
+/// Cap on concurrent diagram renders. Each render acquires one permit before
+/// dispatching to `spawn_blocking`. Prevents many simultaneous renders from
+/// saturating the blocking thread pool while the UI thread tries to redraw.
+static RENDER_LIMIT: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(3));
 
 /// Maximum accepted source size (bytes). Anything larger is rejected before
 /// the parser/renderer runs.
@@ -25,14 +31,32 @@ pub const MAX_SVG_BYTES: usize = 4 * 1024 * 1024;
 /// Default LRU cache capacity.
 pub const DEFAULT_CACHE_CAP: usize = 64;
 
+/// Output of a successful diagram render. Carries the raw SVG bytes plus a
+/// pre-rasterized RGBA pixmap so the UI thread never re-parses SVG at draw
+/// time.
+#[derive(Debug, Clone)]
+pub struct RenderOutput {
+    pub svg: Vec<u8>,
+    pub rgba: Vec<u8>,
+    pub w: u32,
+    pub h: u32,
+}
+
 /// State of a diagram in the cache.
 #[derive(Debug, Clone)]
 pub enum DiagramState {
     /// A render task is in flight.
     Pending,
-    /// Render completed successfully. `source_bytes` is the SVG payload.
+    /// Render completed successfully.
+    ///
+    /// - `inline` is a pre-rasterized image handle used for the inline view.
+    ///   Bypasses iced_wgpu's per-redraw SVG parse/raster step.
+    /// - `zoom` is the original SVG handle, used by the zoom modal where
+    ///   vector crispness matters.
+    /// - `source_bytes` is the raw SVG payload (copy/export).
     Ready {
-        handle: svg::Handle,
+        inline: image::Handle,
+        zoom: svg::Handle,
         source_bytes: Arc<Vec<u8>>,
     },
     /// Render failed — held so we don't retry on every redraw.
@@ -205,15 +229,66 @@ fn inject_dot_preamble(source: &str, preamble: &str) -> String {
 /// Async wrapper around [`render_blocking`] for `iced::Task::perform`. Owns
 /// its inputs and offloads to `tokio::task::spawn_blocking`, so the blocking
 /// renderer never stalls the runtime executor.
+///
+/// After producing the SVG string, this also rasterizes it to RGBA on the
+/// same blocking thread so the UI never re-parses SVG at draw time. A global
+/// [`RENDER_LIMIT`] semaphore caps how many of these run concurrently.
 pub async fn render_blocking_async(
     kind: DiagramKind,
     source: String,
     palette: Palette,
     font_family: String,
-) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || render_blocking(kind, &source, &palette, &font_family))
+) -> Result<RenderOutput, String> {
+    // Acquire a permit before spawning the blocking job. The permit drops at
+    // the end of this future, which is also after the blocking task has been
+    // awaited — so the cap really gates blocking-pool occupancy.
+    let _permit = RENDER_LIMIT
+        .acquire()
         .await
-        .unwrap_or_else(|_| Err("render task panicked".to_string()))
+        .map_err(|_| "render limit closed".to_string())?;
+    tokio::task::spawn_blocking(move || -> Result<RenderOutput, String> {
+        let svg_string = render_blocking(kind, &source, &palette, &font_family)?;
+        let svg_bytes = svg_string.into_bytes();
+        let (rgba, w, h) = rasterize_for_inline(&svg_bytes)?;
+        Ok(RenderOutput {
+            svg: svg_bytes,
+            rgba,
+            w,
+            h,
+        })
+    })
+    .await
+    .unwrap_or_else(|_| Err("render task panicked".to_string()))
+}
+
+/// Rasterize a diagram SVG to RGBA at a size suitable for the inline view.
+///
+/// The rasterization target is `min(viewbox_width * 2.0, 1600.0)` px wide,
+/// preserving aspect. This gives a crisp display up to ~800px wide UI
+/// without ballooning memory on absurdly wide diagrams.
+fn rasterize_for_inline(svg_bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
+    use resvg::tiny_skia;
+    use resvg::usvg;
+    const MAX_WIDTH: f32 = 1600.0;
+
+    let opt = usvg::Options::default();
+    let tree = usvg::Tree::from_data(svg_bytes, &opt).map_err(|e| e.to_string())?;
+    let sz = tree.size();
+    let (w, h) = (sz.width(), sz.height());
+    if w <= 0.0 || h <= 0.0 {
+        return Err("svg has zero size".into());
+    }
+    let target = (w * 2.0).min(MAX_WIDTH);
+    let scale = (target / w).max(0.01);
+    let pw = (w * scale).round().max(1.0) as u32;
+    let ph = (h * scale).round().max(1.0) as u32;
+    let mut pixmap = tiny_skia::Pixmap::new(pw, ph).ok_or("pixmap alloc failed")?;
+    resvg::render(
+        &tree,
+        tiny_skia::Transform::from_scale(scale, scale),
+        &mut pixmap.as_mut(),
+    );
+    Ok((pixmap.take(), pw, ph))
 }
 
 /// Blocking renderer. Wraps the inner work in `catch_unwind` so a panic in a

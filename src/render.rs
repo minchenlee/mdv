@@ -804,12 +804,16 @@ fn render_diagram<'a>(
     let state = img.diagram_cache.peek(&key);
 
     match state {
-        Some(DiagramState::Ready { handle, .. }) => {
+        Some(DiagramState::Ready { inline, .. }) => {
             let pal_c = *pal;
-            let svg_el = svg_widget(handle.clone())
+            // Use the pre-rasterized RGBA handle for inline display. This
+            // bypasses iced_wgpu's per-redraw SVG parse step that the old
+            // `svg::Handle::from_memory` path triggered.
+            let inline_el = image_widget(inline.clone())
                 .width(Length::Fill)
-                .height(Length::Shrink);
-            let body = container(svg_el)
+                .height(Length::Shrink)
+                .content_fit(iced::ContentFit::Contain);
+            let body = container(inline_el)
                 .padding(Padding::from(10))
                 .max_height(600.0)
                 .width(Length::Fill)

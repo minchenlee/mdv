@@ -195,7 +195,7 @@ pub enum Message {
     DiagramRendered {
         hash: u64,
         theme_id: u32,
-        result: Result<String, String>,
+        result: Result<crate::diagram::RenderOutput, String>,
     },
     Noop,
 }
@@ -1741,8 +1741,8 @@ impl App {
                 // we want the one matching the current palette.
                 let key = (hash, self.diagram_theme_id);
                 let handle = match self.diagram_cache.peek(&key) {
-                    Some(crate::diagram::DiagramState::Ready { handle, .. }) => {
-                        Some(handle.clone())
+                    Some(crate::diagram::DiagramState::Ready { zoom, .. }) => {
+                        Some(zoom.clone())
                     }
                     _ => None,
                 };
@@ -1784,12 +1784,14 @@ impl App {
                     return Task::none();
                 }
                 let state = match result {
-                    Ok(svg) => {
-                        let bytes = svg.into_bytes();
-                        let handle = iced::widget::svg::Handle::from_memory(bytes.clone());
+                    Ok(out) => {
+                        let crate::diagram::RenderOutput { svg, rgba, w, h } = out;
+                        let inline = iced::widget::image::Handle::from_rgba(w, h, rgba);
+                        let zoom = iced::widget::svg::Handle::from_memory(svg.clone());
                         crate::diagram::DiagramState::Ready {
-                            handle,
-                            source_bytes: std::sync::Arc::new(bytes),
+                            inline,
+                            zoom,
+                            source_bytes: std::sync::Arc::new(svg),
                         }
                     }
                     Err(msg) => crate::diagram::DiagramState::Err(msg),
