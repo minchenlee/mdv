@@ -12,7 +12,7 @@ use std::sync::{Arc, LazyLock};
 pub use crate::ast::DiagramKind;
 use crate::theme::Palette;
 
-use iced::widget::{image, svg};
+use iced::widget::image;
 use iced::Color;
 use tokio::sync::Semaphore;
 
@@ -49,14 +49,13 @@ pub enum DiagramState {
     Pending,
     /// Render completed successfully.
     ///
-    /// - `inline` is a pre-rasterized image handle used for the inline view.
-    ///   Bypasses iced_wgpu's per-redraw SVG parse/raster step.
-    /// - `zoom` is the original SVG handle, used by the zoom modal where
-    ///   vector crispness matters.
+    /// - `inline` is a pre-rasterized image handle used for both inline view
+    ///   and the zoom modal (reuses iced's `image::viewer` for scroll-zoom
+    ///   + drag-pan + escape-close parity with normal images). Bypasses
+    ///   iced_wgpu's per-redraw SVG parse/raster step.
     /// - `source_bytes` is the raw SVG payload (copy/export).
     Ready {
         inline: image::Handle,
-        zoom: svg::Handle,
         source_bytes: Arc<Vec<u8>>,
     },
     /// Render failed — held so we don't retry on every redraw.

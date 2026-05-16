@@ -262,11 +262,12 @@ pub struct App {
     /// so the diagram cache (keyed on `(hash, theme_id)`) is invalidated for
     /// the new palette automatically.
     pub diagram_theme_id: u32,
-    /// Pre-built svg::Handle of the diagram currently shown in the zoom
-    /// overlay. `None` when the overlay is showing a normal raster/svg
-    /// image instead. Stored as Handle (not bytes) so view passes can
-    /// clone cheaply without re-parsing.
-    pub zoom_diagram: Option<iced::widget::svg::Handle>,
+    /// Pre-rasterized image::Handle of the diagram currently shown in the
+    /// zoom overlay. `None` when overlay shows a normal raster/svg image.
+    /// Using image::Handle lets the zoom modal reuse iced's built-in
+    /// `image::viewer` for scroll-to-zoom + drag-to-pan + escape-to-close
+    /// parity with normal images. Handle clones are cheap (Arc inside).
+    pub zoom_diagram: Option<iced::widget::image::Handle>,
 }
 
 #[derive(Debug, Clone)]
@@ -1741,8 +1742,8 @@ impl App {
                 // we want the one matching the current palette.
                 let key = (hash, self.diagram_theme_id);
                 let handle = match self.diagram_cache.peek(&key) {
-                    Some(crate::diagram::DiagramState::Ready { zoom, .. }) => {
-                        Some(zoom.clone())
+                    Some(crate::diagram::DiagramState::Ready { inline, .. }) => {
+                        Some(inline.clone())
                     }
                     _ => None,
                 };
@@ -1787,10 +1788,8 @@ impl App {
                     Ok(out) => {
                         let crate::diagram::RenderOutput { svg, rgba, w, h } = out;
                         let inline = iced::widget::image::Handle::from_rgba(w, h, rgba);
-                        let zoom = iced::widget::svg::Handle::from_memory(svg.clone());
                         crate::diagram::DiagramState::Ready {
                             inline,
-                            zoom,
                             source_bytes: std::sync::Arc::new(svg),
                         }
                     }
@@ -2320,7 +2319,7 @@ fn toast_overlay<'a>(text: &str, pal: Palette) -> Element<'a, Message> {
 
 fn image_zoom_overlay<'a>(
     url: Option<&'a str>,
-    diagram: Option<&iced::widget::svg::Handle>,
+    diagram: Option<&iced::widget::image::Handle>,
     cache: &HashMap<String, ImageState>,
     pal: Palette,
 ) -> Element<'a, Message> {
@@ -2335,13 +2334,12 @@ fn image_zoom_overlay<'a>(
             .into()
     };
     // Diagram overrides image source when set — DiagramZoom clears zoom_url.
+    // Reuses image::viewer for scroll-zoom + drag-pan + escape-close parity
+    // with normal images.
     if let Some(handle) = diagram {
-        let svg_el: Element<'a, Message> = iced::widget::svg(handle.clone())
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into();
+        let inner = mk_viewer(handle.clone());
         let scrim = container(
-            container(svg_el)
+            container(inner)
                 .padding(24)
                 .center_x(Length::Fill)
                 .center_y(Length::Fill),
