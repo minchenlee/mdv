@@ -1,6 +1,7 @@
 pub mod app;
 pub mod ast;
 pub mod bench;
+pub mod diagram;
 pub mod highlight;
 pub mod icon;
 pub mod md_highlight;
