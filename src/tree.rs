@@ -30,12 +30,16 @@ fn fill(node: &mut Node, depth: usize, max_depth: usize) {
     if depth >= max_depth {
         return;
     }
-    let Ok(rd) = std::fs::read_dir(&node.path) else { return };
+    let Ok(rd) = std::fs::read_dir(&node.path) else {
+        return;
+    };
     let mut dirs: Vec<Node> = Vec::new();
     let mut files: Vec<Node> = Vec::new();
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
-        if name.starts_with('.') || name == "node_modules" || name == "target" {
+        // Skip noisy build/vcs caches but allow other dot-dirs (.claude,
+        // .vscode, .github, etc.) so users can browse their config.
+        if name == "node_modules" || name == "target" || name == ".git" {
             continue;
         }
         let p = e.path();
@@ -49,7 +53,12 @@ fn fill(node: &mut Node, depth: usize, max_depth: usize) {
             fill(&mut child, depth + 1, max_depth);
             dirs.push(child);
         } else if is_markdown_path(&p) {
-            files.push(Node { path: p, name, is_dir: false, children: Vec::new() });
+            files.push(Node {
+                path: p,
+                name,
+                is_dir: false,
+                children: Vec::new(),
+            });
         }
     }
     dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));

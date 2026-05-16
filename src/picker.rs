@@ -31,7 +31,13 @@ impl Picker {
             .or_else(|| dirs::home_dir())
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("/"));
-        let mut p = Self { cwd, entries: Vec::new(), selected: 0, error: None, mode };
+        let mut p = Self {
+            cwd,
+            entries: Vec::new(),
+            selected: 0,
+            error: None,
+            mode,
+        };
         p.refresh();
         p
     }
@@ -47,7 +53,9 @@ impl Picker {
                     .filter_map(|e| {
                         let path = e.path();
                         let name = e.file_name().to_string_lossy().into_owned();
-                        if name.starts_with('.') {
+                        // Skip only .git — other dot-entries (.claude,
+                        // .vscode, .github, etc.) remain browsable.
+                        if name == ".git" {
                             return None;
                         }
                         let is_dir = path.is_dir();
@@ -64,7 +72,12 @@ impl Picker {
                                 }
                             }
                         }
-                        Some(Entry { name, path, is_dir, is_md })
+                        Some(Entry {
+                            name,
+                            path,
+                            is_dir,
+                            is_md,
+                        })
                     })
                     .collect();
                 items.sort_by(|a, b| match (a.is_dir, b.is_dir) {
@@ -137,11 +150,13 @@ pub fn walk_markdown(root: &Path, max_depth: usize, max_files: usize) -> Vec<Pat
         if out.len() >= max_files {
             break;
         }
-        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         let mut sub = Vec::new();
         for e in rd.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') || name == "node_modules" || name == "target" {
+            if name == ".git" || name == "node_modules" || name == "target" {
                 continue;
             }
             let p = e.path();
@@ -181,7 +196,12 @@ pub fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
                 if prev_match >= 0 && i == prev_match + 1 {
                     score += 15; // contiguous bonus
                 }
-                if prev_char == '/' || prev_char == '_' || prev_char == '-' || prev_char == ' ' || i == 0 {
+                if prev_char == '/'
+                    || prev_char == '_'
+                    || prev_char == '-'
+                    || prev_char == ' '
+                    || i == 0
+                {
                     score += 8; // boundary bonus
                 }
                 prev_match = i;
