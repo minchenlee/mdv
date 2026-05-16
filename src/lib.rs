@@ -1,9 +1,10 @@
-pub mod bench;
 pub mod app;
 pub mod ast;
+pub mod bench;
 pub mod highlight;
 pub mod icon;
 pub mod md_highlight;
+pub mod mindmap;
 pub mod parser;
 pub mod picker;
 pub mod recent;

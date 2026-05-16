@@ -1,6 +1,6 @@
-use crate::ast::{Block, BlockId};
-use crate::parser;
+use crate::ast::{Block, BlockId, Inline};
 use crate::icon::{self, ic};
+use crate::parser;
 use crate::picker::{self, Picker, PickerMode};
 use crate::render::Highlight;
 use crate::search::{self, MatchPos};
@@ -17,6 +17,15 @@ use std::path::PathBuf;
 pub enum ViewMode {
     Rendered,
     Raw,
+    Mindmap,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MindmapDir {
+    Up,
+    Down,
+    Left,
+    Right,
 }
 
 #[derive(Debug, Clone)]
@@ -38,6 +47,11 @@ const TREE_INDENT: f32 = 14.0;
 const SCROLLER_FADE_MS: u64 = 1200;
 const SIDEBAR_MIN: f32 = 160.0;
 const SIDEBAR_MAX: f32 = 600.0;
+const MIND_PANEL_DEFAULT: f32 = 380.0;
+const MIND_PANEL_MIN: f32 = 240.0;
+const MIND_PANEL_MAX: f32 = 900.0;
+const MIND_PANEL_MAX_BLOCKS: usize = 80;
+const MIND_PANEL_MAX_TEXT_BYTES: usize = 24 * 1024;
 
 fn editor_font() -> iced::Font {
     iced::Font {
@@ -148,6 +162,17 @@ pub enum Message {
     SvgRasterized(String, Result<(Vec<u8>, u32, u32), String>),
     OpenImageZoom(String),
     ToggleViewMode,
+    ToggleMindmap,
+    MindmapToggleNode(crate::ast::BlockId),
+    MindmapSelectLeaf(crate::ast::BlockId),
+    MindmapDeselect,
+    MindmapNavigate(MindmapDir),
+    MindmapToggleSelected,
+    MindmapPanelDragStart(f32),
+    MindmapPanelDragMove(f32),
+    MindmapPanelDragEnd,
+    ToggleMindmapAutocenter,
+    ToggleMindmapPanel,
     HintSelection,
     FoldChordStart,
     FoldChordCancel,
@@ -212,6 +237,12 @@ pub struct App {
     pub folded: HashSet<crate::ast::BlockId>,
     pub hovered_heading: Option<crate::ast::BlockId>,
     pub fold_chord_pending: bool,
+    pub mindmap_collapsed: HashSet<crate::ast::BlockId>,
+    pub mindmap_panel_open: bool,
+    pub mindmap_selected: Option<crate::ast::BlockId>,
+    pub mindmap_panel_width: f32,
+    pub mindmap_panel_drag: Option<(f32, Option<f32>)>,
+    pub mindmap_autocenter: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -272,6 +303,12 @@ impl Default for App {
             folded: HashSet::new(),
             hovered_heading: None,
             fold_chord_pending: false,
+            mindmap_collapsed: HashSet::new(),
+            mindmap_panel_open: false,
+            mindmap_selected: None,
+            mindmap_panel_width: MIND_PANEL_DEFAULT,
+            mindmap_panel_drag: None,
+            mindmap_autocenter: true,
         }
     }
 }
@@ -307,7 +344,9 @@ impl App {
 
     fn scroll_tree_to_cursor(&self) -> Task<Message> {
         const ROW_H: f32 = 26.0;
-        let Some(root) = &self.workspace_tree else { return Task::none() };
+        let Some(root) = &self.workspace_tree else {
+            return Task::none();
+        };
         let total = tree::flatten(root, &self.expanded).len();
         if total == 0 {
             return Task::none();
@@ -327,10 +366,7 @@ impl App {
             Overlay::Command => (self.filtered_commands().len(), 32.0),
             Overlay::ThemePicker => (self.filtered_themes().len(), 32.0),
             Overlay::FolderPicker => (
-                self.picker
-                    .as_ref()
-                    .map(|p| p.entries.len())
-                    .unwrap_or(0),
+                self.picker.as_ref().map(|p| p.entries.len()).unwrap_or(0),
                 33.0,
             ),
             Overlay::None | Overlay::ImageZoom => (0, 32.0),
@@ -381,18 +417,22 @@ impl App {
         theme::Palette,
         Option<theme::Typography>,
     ) {
-        let mut cycle: Vec<(theme::ThemeId, String, theme::Palette, Option<theme::Typography>)> =
-            theme::ThemePreset::ALL
-                .iter()
-                .map(|p| {
-                    (
-                        theme::ThemeId::Preset(*p),
-                        p.label().to_string(),
-                        theme::palette_for(*p),
-                        None,
-                    )
-                })
-                .collect();
+        let mut cycle: Vec<(
+            theme::ThemeId,
+            String,
+            theme::Palette,
+            Option<theme::Typography>,
+        )> = theme::ThemePreset::ALL
+            .iter()
+            .map(|p| {
+                (
+                    theme::ThemeId::Preset(*p),
+                    p.label().to_string(),
+                    theme::palette_for(*p),
+                    None,
+                )
+            })
+            .collect();
         for t in &self.custom_themes {
             cycle.push((
                 theme::ThemeId::Custom(t.slug.clone()),
@@ -510,7 +550,12 @@ impl App {
         }
         let mut parsed = parser::parse(&self.source);
         for (_id, b) in parsed.iter_mut() {
-            if let Block::CodeBlock { lang: Some(l), code, spans } = b {
+            if let Block::CodeBlock {
+                lang: Some(l),
+                code,
+                spans,
+            } = b
+            {
                 if spans.is_empty() {
                     *spans = self.hl_cache.highlight(l, code);
                 }
@@ -535,14 +580,113 @@ impl App {
         self.overlay_selected = 0;
         self.overlay_viewport = None;
         if kind == Overlay::FolderPicker {
-            let start = self
-                .workspace
-                .clone()
-                .or_else(|| self.file.as_ref().and_then(|p| p.parent().map(|x| x.to_path_buf())));
+            let start = self.workspace.clone().or_else(|| {
+                self.file
+                    .as_ref()
+                    .and_then(|p| p.parent().map(|x| x.to_path_buf()))
+            });
             self.picker = Some(Picker::new(start, PickerMode::Folder));
         } else {
             self.picker = None;
         }
+    }
+
+    fn mindmap_panel_range(&self, target: BlockId) -> Option<(usize, usize, bool)> {
+        let mut start = None;
+        let mut natural_end = self.ast.len();
+        for (i, (id, b)) in self.ast.iter().enumerate() {
+            if start.is_none() {
+                if *id == target && matches!(b, Block::Heading { .. }) {
+                    start = Some(i);
+                }
+            } else if matches!(b, Block::Heading { .. }) {
+                natural_end = i;
+                break;
+            }
+        }
+
+        let start = start?;
+        let mut end = natural_end;
+        let mut text_bytes = 0usize;
+        for i in start..natural_end {
+            let block_count = i - start + 1;
+            text_bytes = text_bytes.saturating_add(block_text_bytes(&self.ast[i].1));
+            if block_count >= MIND_PANEL_MAX_BLOCKS || text_bytes >= MIND_PANEL_MAX_TEXT_BYTES {
+                end = i + 1;
+                break;
+            }
+        }
+        Some((start, end, end < natural_end))
+    }
+
+    /// Right-side panel shown in Mindmap mode. Renders a bounded markdown slice
+    /// for the selected heading so panel open/redraw cannot rebuild huge trees.
+    fn mindmap_panel_view(
+        &self,
+        pal: &Palette,
+        hl: &Highlight,
+        recently_scrolled: bool,
+        panel_width: f32,
+    ) -> Element<'_, Message> {
+        let pal_c = *pal;
+        let content: Element<'_, Message> = match self.mindmap_selected {
+            None => container(
+                text("Click a leaf heading to see its content")
+                    .color(pal.muted)
+                    .size(13),
+            )
+            .padding(24)
+            .into(),
+            Some(target) => {
+                match self.mindmap_panel_range(target) {
+                    Some((s, end, truncated)) => {
+                        let mut col = Column::new().spacing(12).push(crate::render::render(
+                            &self.ast[s..end],
+                            pal,
+                            &self.typography,
+                            hl,
+                            self.body_viewport.as_ref(),
+                            &self.height_cache,
+                            &self.image_cache,
+                            self.file.as_deref(),
+                            &self.folded,
+                            self.hovered_heading,
+                        ));
+                        if truncated {
+                            col = col.push(
+                                container(
+                                    text("Panel preview truncated for performance")
+                                        .color(pal.muted)
+                                        .size(12),
+                                )
+                                .padding(Padding::from([8, 0])),
+                            );
+                        }
+                        col.into()
+                    }
+                    None => container(text("Heading not found").color(pal.muted).size(13))
+                        .padding(24)
+                        .into(),
+                }
+            }
+        };
+        let scrolled = scrollable(container(content).padding(Padding::from([24, 24])))
+            .height(Length::Fill)
+            .direction(slim_scroll_direction())
+            .style(move |_, status| sleek_scrollable_style(status, pal_c, recently_scrolled));
+        container(scrolled)
+            .width(Length::Fixed(panel_width))
+            .height(Length::Fill)
+            .style(move |_| container::Style {
+                background: Some(pal_c.surface.into()),
+                border: Border {
+                    color: pal_c.rule,
+                    width: 1.0,
+                    radius: 0.0.into(),
+                },
+                ..Default::default()
+            })
+            .into()
     }
 
     fn command_items(&self) -> Vec<(&'static str, Message)> {
@@ -552,6 +696,9 @@ impl App {
             ("Toggle Sidebar  ⌘B", Message::ToggleSidebar),
             ("Find in Document  ⌘F", Message::ToggleSearch),
             ("Toggle Raw/Rendered  ⌘E", Message::ToggleViewMode),
+            ("Toggle Mindmap  ⌘M", Message::ToggleMindmap),
+            ("Toggle Mindmap Panel  ⌘⌥B", Message::ToggleMindmapPanel),
+            ("Toggle Mindmap Auto-Center", Message::ToggleMindmapAutocenter),
             ("Cycle Theme  ⌘T", Message::ToggleTheme),
             ("Pick Theme…", Message::OpenThemePicker),
             ("Reload Custom Themes", Message::ReloadThemes),
@@ -664,13 +811,21 @@ impl App {
                 self.overlay = Overlay::None;
                 self.picker = None;
                 self.zoom_url = None;
-                if was_zoom { self.restore_body_scroll() } else { Task::none() }
+                if was_zoom {
+                    self.restore_body_scroll()
+                } else {
+                    Task::none()
+                }
             }
             Message::ImageFetched(url, Ok(bytes)) => {
                 let state = if is_svg_bytes(&bytes) || url.to_ascii_lowercase().ends_with(".svg") {
                     let arc = std::sync::Arc::new(bytes);
                     let svg = iced::widget::svg::Handle::from_memory(arc.as_ref().clone());
-                    ImageState::LoadedSvg { svg, bytes: arc, raster: None }
+                    ImageState::LoadedSvg {
+                        svg,
+                        bytes: arc,
+                        raster: None,
+                    }
                 } else {
                     let handle = iced::widget::image::Handle::from_bytes(bytes);
                     ImageState::Loaded(handle)
@@ -791,19 +946,186 @@ impl App {
                         self.edit_redo.clear();
                         self.view_mode = ViewMode::Rendered;
                     }
+                    ViewMode::Mindmap => {
+                        self.mindmap_panel_drag = None;
+                        self.editor = Some(iced::widget::text_editor::Content::with_text(
+                            self.source.as_str(),
+                        ));
+                        self.edit_history.clear();
+                        self.edit_redo.clear();
+                        self.dirty = false;
+                        self.view_mode = ViewMode::Raw;
+                    }
                 }
                 restore
+            }
+            Message::ToggleMindmap => {
+                if self.file.is_none() {
+                    return Task::none();
+                }
+                let restore = self.restore_body_scroll();
+                match self.view_mode {
+                    ViewMode::Mindmap => {
+                        self.mindmap_panel_drag = None;
+                        self.view_mode = ViewMode::Rendered;
+                    }
+                    ViewMode::Raw => {
+                        if let Some(ed) = self.editor.take() {
+                            let text = ed.text();
+                            if text != self.source {
+                                self.source = text;
+                                self.reparse_source();
+                            }
+                        }
+                        self.edit_history.clear();
+                        self.edit_redo.clear();
+                        self.view_mode = ViewMode::Mindmap;
+                    }
+                    ViewMode::Rendered => self.view_mode = ViewMode::Mindmap,
+                }
+                restore
+            }
+            Message::MindmapToggleNode(id) => {
+                if self.mindmap_collapsed.contains(&id) {
+                    self.mindmap_collapsed.remove(&id);
+                } else {
+                    self.mindmap_collapsed.insert(id);
+                }
+                Task::none()
+            }
+            Message::MindmapSelectLeaf(id) => {
+                self.mindmap_selected = Some(id);
+                self.mindmap_panel_open = true;
+                Task::none()
+            }
+            Message::MindmapDeselect => {
+                self.mindmap_selected = None;
+                self.mindmap_panel_open = false;
+                self.mindmap_panel_drag = None;
+                Task::none()
+            }
+            Message::MindmapNavigate(dir) => {
+                let (nodes, _) = crate::mindmap::build_layout(
+                    &self.ast,
+                    self.file.as_deref(),
+                    &self.mindmap_collapsed,
+                );
+                // Build parent index.
+                let mut parents: Vec<Option<usize>> = vec![None; nodes.len()];
+                for (i, n) in nodes.iter().enumerate() {
+                    for &c in &n.children {
+                        parents[c] = Some(i);
+                    }
+                }
+                // Current index: selected blockid, else first heading.
+                let cur = self
+                    .mindmap_selected
+                    .and_then(|id| nodes.iter().position(|n| n.id == Some(id)))
+                    .or_else(|| {
+                        // No selection: pick root's first child if any.
+                        nodes
+                            .first()
+                            .and_then(|root| root.children.first().copied())
+                    });
+                let Some(cur_idx) = cur else {
+                    return Task::none();
+                };
+                let next_idx: Option<usize> = match dir {
+                    MindmapDir::Down | MindmapDir::Up => (|| -> Option<usize> {
+                        let parent = parents[cur_idx]?;
+                        let kids = &nodes[parent].children;
+                        let pos = kids.iter().position(|&i| i == cur_idx)?;
+                        match dir {
+                            MindmapDir::Down => kids.get(pos + 1).copied(),
+                            MindmapDir::Up => {
+                                if pos == 0 {
+                                    None
+                                } else {
+                                    Some(kids[pos - 1])
+                                }
+                            }
+                            _ => unreachable!(),
+                        }
+                    })(),
+                    MindmapDir::Left => parents[cur_idx].filter(|&p| nodes[p].id.is_some()),
+                    MindmapDir::Right => {
+                        let n = &nodes[cur_idx];
+                        if !n.children.is_empty() {
+                            n.children.first().copied()
+                        } else if n.has_hidden_children {
+                            // Expand the collapsed node, then on next press right will descend.
+                            if let Some(id) = n.id {
+                                self.mindmap_collapsed.remove(&id);
+                            }
+                            None
+                        } else {
+                            None
+                        }
+                    }
+                };
+                if let Some(idx) = next_idx {
+                    if let Some(id) = nodes[idx].id {
+                        self.mindmap_selected = Some(id);
+                        self.mindmap_panel_open = true;
+                    }
+                }
+                Task::none()
+            }
+            Message::ToggleMindmapPanel => {
+                self.mindmap_panel_open = !self.mindmap_panel_open;
+                if !self.mindmap_panel_open {
+                    self.mindmap_panel_drag = None;
+                }
+                Task::none()
+            }
+            Message::MindmapToggleSelected => {
+                if let Some(id) = self.mindmap_selected {
+                    if self.mindmap_collapsed.contains(&id) {
+                        self.mindmap_collapsed.remove(&id);
+                    } else {
+                        self.mindmap_collapsed.insert(id);
+                    }
+                }
+                Task::none()
+            }
+            Message::MindmapPanelDragStart(_) => {
+                self.mindmap_panel_drag = Some((self.mindmap_panel_width, None));
+                Task::none()
+            }
+            Message::MindmapPanelDragMove(cursor_x) => {
+                if let Some((orig_w, anchor)) = self.mindmap_panel_drag {
+                    match anchor {
+                        None => {
+                            self.mindmap_panel_drag = Some((orig_w, Some(cursor_x)));
+                        }
+                        Some(ax) => {
+                            let dx = ax - cursor_x;
+                            self.mindmap_panel_width =
+                                (orig_w + dx).clamp(MIND_PANEL_MIN, MIND_PANEL_MAX);
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::MindmapPanelDragEnd => {
+                self.mindmap_panel_drag = None;
+                Task::none()
+            }
+            Message::ToggleMindmapAutocenter => {
+                self.mindmap_autocenter = !self.mindmap_autocenter;
+                let label = if self.mindmap_autocenter {
+                    "Mindmap auto-center: on"
+                } else {
+                    "Mindmap auto-center: off"
+                };
+                self.show_toast(label.into())
             }
             Message::EditorAction(action) => {
                 if let Some(ed) = self.editor.as_mut() {
                     let edits = action.is_edit();
                     if edits {
                         let prev = ed.text();
-                        let push = self
-                            .edit_history
-                            .last()
-                            .map(|s| s != &prev)
-                            .unwrap_or(true);
+                        let push = self.edit_history.last().map(|s| s != &prev).unwrap_or(true);
                         if push {
                             self.edit_history.push(prev);
                             if self.edit_history.len() > 200 {
@@ -842,7 +1164,9 @@ impl App {
                 Task::none()
             }
             Message::SaveFile => {
-                let Some(path) = self.file.clone() else { return Task::none() };
+                let Some(path) = self.file.clone() else {
+                    return Task::none();
+                };
                 let text = match self.editor.as_ref() {
                     Some(ed) => ed.text(),
                     None => self.source.clone(),
@@ -852,7 +1176,9 @@ impl App {
                 self.dirty = false;
                 Task::perform(
                     async move {
-                        tokio::fs::write(&path, text).await.map_err(|e| e.to_string())
+                        tokio::fs::write(&path, text)
+                            .await
+                            .map_err(|e| e.to_string())
                     },
                     Message::FileSaved,
                 )
@@ -864,7 +1190,11 @@ impl App {
             }
             Message::OpenImageZoom(url) => {
                 let raster_task = match self.image_cache.get(&url) {
-                    Some(ImageState::LoadedSvg { bytes, raster: None, .. }) => {
+                    Some(ImageState::LoadedSvg {
+                        bytes,
+                        raster: None,
+                        ..
+                    }) => {
                         let key = url.clone();
                         let bytes = bytes.clone();
                         Some(Task::perform(
@@ -879,7 +1209,8 @@ impl App {
                         self.image_cache.insert(url.clone(), ImageState::Loading);
                         Some(Task::perform(
                             async move {
-                                let bytes = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
+                                let bytes =
+                                    tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
                                 rasterize_svg(&bytes)
                             },
                             move |res| Message::SvgRasterized(key.clone(), res),
@@ -935,11 +1266,9 @@ impl App {
                     Overlay::FileFinder => self.filtered_files().len(),
                     Overlay::Command => self.filtered_commands().len(),
                     Overlay::ThemePicker => self.filtered_themes().len(),
-                    Overlay::FolderPicker => self
-                        .picker
-                        .as_ref()
-                        .map(|p| p.entries.len())
-                        .unwrap_or(0),
+                    Overlay::FolderPicker => {
+                        self.picker.as_ref().map(|p| p.entries.len()).unwrap_or(0)
+                    }
                     Overlay::None | Overlay::ImageZoom => 0,
                 };
                 if len == 0 {
@@ -1012,12 +1341,19 @@ impl App {
                 self.source = src;
                 self.file = Some(path);
                 self.is_data_doc = data_lang_for(self.file.as_deref()).is_some();
+                self.mindmap_collapsed.clear();
+                self.mindmap_selected = None;
                 if let Some(ast) = self.synthesize_data_ast() {
                     self.ast = ast;
                 } else {
                     let mut parsed = parser::parse(&self.source);
                     for (_id, b) in parsed.iter_mut() {
-                        if let Block::CodeBlock { lang: Some(l), code, spans } = b {
+                        if let Block::CodeBlock {
+                            lang: Some(l),
+                            code,
+                            spans,
+                        } = b
+                        {
                             if spans.is_empty() {
                                 *spans = self.hl_cache.highlight(l, code);
                             }
@@ -1040,7 +1376,11 @@ impl App {
                         }
                     }
                 }
-                if fetches.is_empty() { Task::none() } else { Task::batch(fetches) }
+                if fetches.is_empty() {
+                    Task::none()
+                } else {
+                    Task::batch(fetches)
+                }
             }
             Message::FileChanged(p) => {
                 if self.dirty {
@@ -1155,20 +1495,25 @@ impl App {
                 Task::none()
             }
             Message::TreeMove(d) => {
-                let Some(root) = &self.workspace_tree else { return Task::none() };
+                let Some(root) = &self.workspace_tree else {
+                    return Task::none();
+                };
                 let len = tree::flatten(root, &self.expanded).len();
                 if len == 0 {
                     return Task::none();
                 }
                 let len_i = len as isize;
-                self.tree_cursor =
-                    ((self.tree_cursor as isize + d).rem_euclid(len_i)) as usize;
+                self.tree_cursor = ((self.tree_cursor as isize + d).rem_euclid(len_i)) as usize;
                 self.scroll_tree_to_cursor()
             }
             Message::TreeActivate => {
-                let Some(root) = &self.workspace_tree else { return Task::none() };
+                let Some(root) = &self.workspace_tree else {
+                    return Task::none();
+                };
                 let rows = tree::flatten(root, &self.expanded);
-                let Some(r) = rows.get(self.tree_cursor) else { return Task::none() };
+                let Some(r) = rows.get(self.tree_cursor) else {
+                    return Task::none();
+                };
                 if r.node.is_dir {
                     let p = r.node.path.clone();
                     if !self.expanded.remove(&p) {
@@ -1181,9 +1526,13 @@ impl App {
                 }
             }
             Message::TreeToggleAtCursor => {
-                let Some(root) = &self.workspace_tree else { return Task::none() };
+                let Some(root) = &self.workspace_tree else {
+                    return Task::none();
+                };
                 let rows = tree::flatten(root, &self.expanded);
-                let Some(r) = rows.get(self.tree_cursor) else { return Task::none() };
+                let Some(r) = rows.get(self.tree_cursor) else {
+                    return Task::none();
+                };
                 if r.node.is_dir {
                     let p = r.node.path.clone();
                     if !self.expanded.remove(&p) {
@@ -1202,7 +1551,10 @@ impl App {
             ),
             Message::ScrollToBottom => iced::widget::operation::scroll_to(
                 Self::scroll_id(),
-                iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: f32::MAX },
+                iced::widget::scrollable::AbsoluteOffset {
+                    x: 0.0,
+                    y: f32::MAX,
+                },
             ),
             Message::ToggleSearch => {
                 self.search_open = !self.search_open;
@@ -1231,8 +1583,7 @@ impl App {
             }
             Message::PrevMatch => {
                 if !self.matches.is_empty() {
-                    self.match_idx =
-                        (self.match_idx + self.matches.len() - 1) % self.matches.len();
+                    self.match_idx = (self.match_idx + self.matches.len() - 1) % self.matches.len();
                 }
                 self.scroll_to_current_match()
             }
@@ -1296,8 +1647,7 @@ impl App {
             }
             _ => None,
         });
-        let watcher =
-            crate::watch::watch_subscription(self.file.clone()).map(Message::FileChanged);
+        let watcher = crate::watch::watch_subscription(self.file.clone()).map(Message::FileChanged);
         let theme_watcher =
             crate::theme_watch::watch_subscription().map(|()| Message::ThemeFilesChanged);
         let focused = self.search_open;
@@ -1305,8 +1655,12 @@ impl App {
         let tree_active = self.sidebar_open && self.workspace.is_some();
         let editing = self.view_mode == ViewMode::Raw && self.editor.is_some();
         let fold_chord = self.fold_chord_pending;
+        let mindmap = self.view_mode == ViewMode::Mindmap;
         let keys = iced::event::listen_with(|ev, status, _id| {
-            let is_keyboard = matches!(&ev, iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { .. }));
+            let is_keyboard = matches!(
+                &ev,
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { .. })
+            );
             if !is_keyboard {
                 return None;
             }
@@ -1317,16 +1671,35 @@ impl App {
             let _ = status;
             Some(ev)
         })
-            .with((focused, overlay_open, tree_active, editing, fold_chord))
-            .map(|((focused, overlay_open, tree_active, editing, fold_chord), ev)| {
+        .with((
+            focused,
+            overlay_open,
+            tree_active,
+            editing,
+            fold_chord,
+            mindmap,
+        ))
+        .map(
+            |((focused, overlay_open, tree_active, editing, fold_chord, mindmap), ev)| {
                 use iced::keyboard::{key::Named, Event as KEv, Key};
-                let (key, mods) = match ev {
-                    iced::Event::Keyboard(KEv::KeyPressed { key, modifiers, .. }) => {
-                        (key, modifiers)
-                    }
+                let (key, physical, mods) = match ev {
+                    iced::Event::Keyboard(KEv::KeyPressed {
+                        key,
+                        physical_key,
+                        modifiers,
+                        ..
+                    }) => (key, physical_key, modifiers),
                     _ => return Message::Noop,
                 };
                 let cmd = mods.command() || mods.control();
+                // ⌘⌥B: alt+letter on macOS swaps the logical char, so match the
+                // physical KeyB code instead of the produced character.
+                if cmd && mods.alt() {
+                    use iced::keyboard::key::{Code, Physical};
+                    if let Physical::Code(Code::KeyB) = physical {
+                        return Message::ToggleMindmapPanel;
+                    }
+                }
                 if fold_chord {
                     if let Key::Character(c) = &key {
                         if let Some(d) = c.chars().next().and_then(|ch| ch.to_digit(10)) {
@@ -1348,6 +1721,7 @@ impl App {
                         "f" if cmd => return Message::ToggleSearch,
                         "t" if cmd => return Message::ToggleTheme,
                         "e" if cmd => return Message::ToggleViewMode,
+                        "m" if cmd => return Message::ToggleMindmap,
                         "c" if cmd && !editing && !overlay_open => return Message::HintSelection,
                         "s" if cmd => return Message::SaveFile,
                         "z" if cmd && editing && mods.shift() => return Message::EditorRedo,
@@ -1389,12 +1763,25 @@ impl App {
                     return Message::Noop;
                 }
                 let m: Option<Message> = match key {
+                    Key::Named(Named::ArrowDown) if mindmap && !overlay_open => {
+                        Some(Message::MindmapNavigate(MindmapDir::Down))
+                    }
+                    Key::Named(Named::ArrowUp) if mindmap && !overlay_open => {
+                        Some(Message::MindmapNavigate(MindmapDir::Up))
+                    }
+                    Key::Named(Named::ArrowLeft) if mindmap && !overlay_open => {
+                        Some(Message::MindmapNavigate(MindmapDir::Left))
+                    }
+                    Key::Named(Named::ArrowRight) if mindmap && !overlay_open => {
+                        Some(Message::MindmapNavigate(MindmapDir::Right))
+                    }
+                    Key::Named(Named::Space) if mindmap && !overlay_open => {
+                        Some(Message::MindmapToggleSelected)
+                    }
                     Key::Named(Named::ArrowDown) if tree_active => Some(Message::TreeMove(1)),
                     Key::Named(Named::ArrowUp) if tree_active => Some(Message::TreeMove(-1)),
                     Key::Named(Named::Enter) if tree_active => Some(Message::TreeActivate),
-                    Key::Named(Named::Space) if tree_active => {
-                        Some(Message::TreeToggleAtCursor)
-                    }
+                    Key::Named(Named::Space) if tree_active => Some(Message::TreeToggleAtCursor),
                     Key::Named(Named::ArrowDown) if mods.command() => Some(Message::ScrollToBottom),
                     Key::Named(Named::ArrowUp) if mods.command() => Some(Message::ScrollToTop),
                     Key::Named(Named::ArrowDown) => Some(Message::ScrollBy(40.0)),
@@ -1415,10 +1802,10 @@ impl App {
                     _ => None,
                 };
                 m.unwrap_or(Message::Noop)
-            });
+            },
+        );
         let scroller = if self.last_scroll_at.is_some() {
-            iced::time::every(std::time::Duration::from_millis(150))
-                .map(|_| Message::ScrollerTick)
+            iced::time::every(std::time::Duration::from_millis(150)).map(|_| Message::ScrollerTick)
         } else {
             iced::Subscription::none()
         };
@@ -1435,7 +1822,21 @@ impl App {
         } else {
             iced::Subscription::none()
         };
-        iced::Subscription::batch([dnd, watcher, theme_watcher, keys, scroller, drag])
+        let mind_drag = if self.view_mode == ViewMode::Mindmap && self.mindmap_panel_drag.is_some()
+        {
+            iced::event::listen_with(|ev, _status, _id| match ev {
+                iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
+                    Some(Message::MindmapPanelDragMove(position.x))
+                }
+                iced::Event::Mouse(iced::mouse::Event::ButtonReleased(
+                    iced::mouse::Button::Left,
+                )) => Some(Message::MindmapPanelDragEnd),
+                _ => None,
+            })
+        } else {
+            iced::Subscription::none()
+        };
+        iced::Subscription::batch([dnd, watcher, theme_watcher, keys, scroller, drag, mind_drag])
     }
 
     pub fn view(&self) -> Element<'_, Message> {
@@ -1496,7 +1897,41 @@ impl App {
                     .map(|m| m.in_block)
                     .unwrap_or(0),
             };
-            let body: Element<'_, Message> = if self.view_mode == ViewMode::Raw {
+            let body: Element<'_, Message> = if self.view_mode == ViewMode::Mindmap {
+                let (nodes, content_size) = crate::mindmap::build_layout(
+                    &self.ast,
+                    self.file.as_deref(),
+                    &self.mindmap_collapsed,
+                );
+                let program = crate::mindmap::MindmapProgram {
+                    nodes,
+                    content_size,
+                    palette: pal,
+                    selected: self.mindmap_selected,
+                    panel_open: self.mindmap_panel_open,
+                    panel_width: self.mindmap_panel_width,
+                    autocenter: self.mindmap_autocenter,
+                    on_toggle: Box::new(Message::MindmapToggleNode),
+                    on_select: Box::new(Message::MindmapSelectLeaf),
+                    on_deselect: Message::MindmapDeselect,
+                };
+                let canvas_el: Element<'_, Message> = iced::widget::canvas(program)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into();
+                if self.mindmap_panel_open {
+                    let panel = self.mindmap_panel_view(
+                        &pal,
+                        &hl,
+                        recently_scrolled,
+                        self.mindmap_panel_width,
+                    );
+                    let handle = mindmap_panel_resize_handle(pal);
+                    irow![canvas_el, handle, panel].into()
+                } else {
+                    canvas_el
+                }
+            } else if self.view_mode == ViewMode::Raw {
                 if let Some(ed) = self.editor.as_ref() {
                     iced::widget::text_editor(ed)
                         .on_action(Message::EditorAction)
@@ -1504,7 +1939,12 @@ impl App {
                         .size(self.typography.code_size)
                         .line_height(iced::widget::text::LineHeight::Relative(1.55))
                         .height(Length::Fill)
-                        .padding(iced::Padding { top: 48.0, right: 32.0, bottom: 24.0, left: 64.0 })
+                        .padding(iced::Padding {
+                            top: 48.0,
+                            right: 32.0,
+                            bottom: 24.0,
+                            left: 64.0,
+                        })
                         .highlight_with::<crate::md_highlight::MdHighlighter>(
                             crate::md_highlight::Settings { palette: pal },
                             |hl, _theme| hl.to_format(),
@@ -1559,7 +1999,7 @@ impl App {
                     self.hovered_heading,
                 )
             };
-            if self.view_mode == ViewMode::Raw {
+            if self.view_mode == ViewMode::Raw || self.view_mode == ViewMode::Mindmap {
                 container(body)
                     .width(Length::Fill)
                     .height(Length::Fill)
@@ -1570,14 +2010,10 @@ impl App {
                     .into()
             } else {
                 scrollable(
-                    container(
-                        container(body)
-                            .max_width(READING_MAX)
-                            .width(Length::Fill),
-                    )
-                    .padding(Padding::from([56, 32]))
-                    .center_x(Length::Fill)
-                    .width(Length::Fill),
+                    container(container(body).max_width(READING_MAX).width(Length::Fill))
+                        .padding(Padding::from([56, 32]))
+                        .center_x(Length::Fill)
+                        .width(Length::Fill),
                 )
                 .id(Self::scroll_id())
                 .height(Length::Fill)
@@ -1597,7 +2033,6 @@ impl App {
         } else {
             reader.into()
         };
-
 
         let main_area: Element<'_, Message> = if self.sidebar_open && self.workspace.is_some() {
             irow![
@@ -1701,9 +2136,12 @@ fn image_zoom_overlay<'a>(
     let inner: Element<'a, Message> = match url {
         Some(u) => match cache.get(u) {
             Some(ImageState::Loaded(h)) => mk_viewer(h.clone()),
-            Some(ImageState::LoadedSvg { raster: Some(h), .. }) => mk_viewer(h.clone()),
-            Some(ImageState::LoadedSvg { raster: None, .. })
-            | Some(ImageState::Loading) => text("rendering…").color(pal.muted).into(),
+            Some(ImageState::LoadedSvg {
+                raster: Some(h), ..
+            }) => mk_viewer(h.clone()),
+            Some(ImageState::LoadedSvg { raster: None, .. }) | Some(ImageState::Loading) => {
+                text("rendering…").color(pal.muted).into()
+            }
             Some(ImageState::Failed) => text("image unavailable").color(pal.muted).into(),
             None => {
                 // Local raster path (cache only stores svg/remote). Use direct viewer.
@@ -1726,6 +2164,37 @@ fn image_zoom_overlay<'a>(
         ..Default::default()
     });
     mouse_area(scrim).on_press(Message::CloseOverlay).into()
+}
+
+fn inline_text_bytes(items: &[Inline]) -> usize {
+    items
+        .iter()
+        .map(|i| match i {
+            Inline::Text(t) | Inline::Code(t) => t.len(),
+            Inline::Emph(c) | Inline::Strong(c) | Inline::Strike(c) => inline_text_bytes(c),
+            Inline::Link { children, url } => inline_text_bytes(children).saturating_add(url.len()),
+        })
+        .sum()
+}
+
+fn block_text_bytes(block: &Block) -> usize {
+    match block {
+        Block::Heading { inlines, .. } | Block::Paragraph(inlines) => inline_text_bytes(inlines),
+        Block::CodeBlock { code, .. } => code.len(),
+        Block::Blockquote(blocks) => blocks.iter().map(block_text_bytes).sum(),
+        Block::List { items, .. } => items
+            .iter()
+            .flat_map(|item| item.blocks.iter())
+            .map(block_text_bytes)
+            .sum(),
+        Block::Table { headers, rows } => headers
+            .iter()
+            .chain(rows.iter().flat_map(|row| row.iter()))
+            .map(|cells| inline_text_bytes(cells))
+            .sum(),
+        Block::Image { url, alt } => url.len().saturating_add(alt.len()),
+        Block::Rule => 0,
+    }
 }
 
 fn edge_scroll(
@@ -1763,24 +2232,32 @@ fn edge_scroll(
     };
     iced::widget::operation::scroll_to(
         id,
-        iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: new_y.max(0.0) },
+        iced::widget::scrollable::AbsoluteOffset {
+            x: 0.0,
+            y: new_y.max(0.0),
+        },
     )
 }
 
 fn welcome_view<'a>(pal: Palette) -> Element<'a, Message> {
     let kbd = |label: &'static str, key: &'static str| {
         irow![
-            container(text(key).size(12).color(pal.fg).shaping(iced::widget::text::Shaping::Advanced))
-                .padding(Padding::from([2, 7]))
-                .style(move |_| container::Style {
-                    background: Some(pal.surface_alt.into()),
-                    border: Border {
-                        color: pal.rule,
-                        width: 1.0,
-                        radius: 5.0.into(),
-                    },
-                    ..Default::default()
-                }),
+            container(
+                text(key)
+                    .size(12)
+                    .color(pal.fg)
+                    .shaping(iced::widget::text::Shaping::Advanced)
+            )
+            .padding(Padding::from([2, 7]))
+            .style(move |_| container::Style {
+                background: Some(pal.surface_alt.into()),
+                border: Border {
+                    color: pal.rule,
+                    width: 1.0,
+                    radius: 5.0.into(),
+                },
+                ..Default::default()
+            }),
             text(label).size(13).color(pal.muted).font(iced::Font {
                 family: iced::font::Family::Name("JetBrains Mono"),
                 ..iced::Font::DEFAULT
@@ -1792,7 +2269,9 @@ fn welcome_view<'a>(pal: Palette) -> Element<'a, Message> {
     centered_card(
         column![
             text("mdv").size(40).color(pal.fg),
-            text("Lightweight, beautiful, native markdown viewer").size(14).color(pal.muted),
+            text("Lightweight, beautiful, native markdown viewer")
+                .size(14)
+                .color(pal.muted),
             Space::new().height(22),
             kbd("Open Folder", "⌘O"),
             kbd("Find File in Workspace", "⌘P"),
@@ -1817,7 +2296,11 @@ fn search_bar_view<'a>(
     pal: Palette,
 ) -> Element<'a, Message> {
     let counter = if matches.is_empty() {
-        if query.is_empty() { String::new() } else { "0/0".into() }
+        if query.is_empty() {
+            String::new()
+        } else {
+            "0/0".into()
+        }
     } else {
         format!("{}/{}", idx + 1, matches.len())
     };
@@ -1882,7 +2365,12 @@ fn sidebar_view<'a>(app: &'a App, pal: Palette) -> Element<'a, Message> {
             Space::new().width(Length::Fill),
             iced::widget::tooltip(
                 ghost_lu(ic::COMMAND, pal).on_press(Message::OpenCommandPalette),
-                container(text("⌘⇧P").size(11).color(pal.fg).shaping(iced::widget::text::Shaping::Advanced))
+                container(
+                    text("⌘⇧P")
+                        .size(11)
+                        .color(pal.fg)
+                        .shaping(iced::widget::text::Shaping::Advanced)
+                )
                 .padding(Padding::from([4, 8]))
                 .style(move |_| container::Style {
                     background: Some(pal.surface_alt.into()),
@@ -1917,7 +2405,7 @@ fn sidebar_view<'a>(app: &'a App, pal: Palette) -> Element<'a, Message> {
         .height(Length::Fill)
         .on_scroll(Message::TreeScrolled)
         .direction(slim_scroll_direction())
-            .style(move |_, status| sleek_scrollable_style(status, pal, recently_scrolled));
+        .style(move |_, status| sleek_scrollable_style(status, pal, recently_scrolled));
 
     container(column![header, body])
         .width(Length::Fixed(app.sidebar_width))
@@ -1927,6 +2415,25 @@ fn sidebar_view<'a>(app: &'a App, pal: Palette) -> Element<'a, Message> {
             ..Default::default()
         })
         .into()
+}
+
+fn mindmap_panel_resize_handle<'a>(pal: Palette) -> Element<'a, Message> {
+    mouse_area(
+        container(
+            Space::new()
+                .width(Length::Fixed(crate::mindmap::PANEL_HANDLE_W))
+                .height(Length::Fill),
+        )
+        .style(move |_| container::Style {
+            background: Some(pal.bg.into()),
+            ..Default::default()
+        })
+        .height(Length::Fill),
+    )
+    .interaction(iced::mouse::Interaction::ResizingHorizontally)
+    .on_press(Message::MindmapPanelDragStart(0.0))
+    .on_release(Message::MindmapPanelDragEnd)
+    .into()
 }
 
 fn sidebar_resize_handle<'a>(pal: Palette) -> Element<'a, Message> {
@@ -1963,7 +2470,11 @@ fn tree_row<'a>(
 
     let chevron: Element<'a, Message> = if node.is_dir {
         let open = expanded.contains(&node.path);
-        let g = if open { ic::CHEVRON_DOWN } else { ic::CHEVRON_RIGHT };
+        let g = if open {
+            ic::CHEVRON_DOWN
+        } else {
+            ic::CHEVRON_RIGHT
+        };
         icon::glyph(g, 12.0, pal.subtle).into()
     } else {
         Space::new().width(12.0).into()
@@ -2033,7 +2544,11 @@ fn tree_row<'a>(
                 background: bg,
                 text_color: pal.fg,
                 border: Border {
-                    color: if show_border { pal.tree_selected_border } else { Color::TRANSPARENT },
+                    color: if show_border {
+                        pal.tree_selected_border
+                    } else {
+                        Color::TRANSPARENT
+                    },
                     width: if show_border { 1.0 } else { 0.0 },
                     radius: 6.0.into(),
                 },
@@ -2065,14 +2580,23 @@ fn primary_button<'a>(label: &'a str, pal: Palette) -> button::Button<'a, Messag
         .padding(Padding::from([8, 14]))
         .style(move |_, status| {
             let bg = match status {
-                button::Status::Hovered => Color { a: 0.92, ..pal.accent },
-                button::Status::Pressed => Color { a: 0.80, ..pal.accent },
+                button::Status::Hovered => Color {
+                    a: 0.92,
+                    ..pal.accent
+                },
+                button::Status::Pressed => Color {
+                    a: 0.80,
+                    ..pal.accent
+                },
                 _ => pal.accent,
             };
             button::Style {
                 background: Some(Background::Color(bg)),
                 text_color: pal.accent_fg,
-                border: Border { radius: 999.0.into(), ..Default::default() },
+                border: Border {
+                    radius: 999.0.into(),
+                    ..Default::default()
+                },
                 ..Default::default()
             }
         })
@@ -2087,7 +2611,10 @@ fn ghost_lu<'a>(code: char, pal: Palette) -> button::Button<'a, Message> {
                 _ => None,
             },
             text_color: pal.muted,
-            border: Border { radius: 999.0.into(), ..Default::default() },
+            border: Border {
+                radius: 999.0.into(),
+                ..Default::default()
+            },
             ..Default::default()
         })
 }
@@ -2142,7 +2669,10 @@ fn folder_picker_overlay<'a>(
                             _ => None,
                         },
                         text_color: pal.fg,
-                        border: Border { radius: 6.0.into(), ..Default::default() },
+                        border: Border {
+                            radius: 6.0.into(),
+                            ..Default::default()
+                        },
                         ..Default::default()
                     })
                     .on_press(Message::PickerNavigate(path)),
@@ -2156,8 +2686,8 @@ fn folder_picker_overlay<'a>(
         if let Some(err) = &pk.error {
             list = list.push(text(err.clone()).color(pal.muted).size(13));
         } else if pk.entries.is_empty() {
-            list = list
-                .push(container(text("Empty folder").color(pal.subtle).size(13)).padding(14));
+            list =
+                list.push(container(text("Empty folder").color(pal.subtle).size(13)).padding(14));
         } else {
             for (i, e) in pk.entries.iter().enumerate() {
                 let is_sel = i == selected;
@@ -2181,7 +2711,10 @@ fn folder_picker_overlay<'a>(
                         _ => None,
                     },
                     text_color: pal.fg,
-                    border: Border { radius: 6.0.into(), ..Default::default() },
+                    border: Border {
+                        radius: 6.0.into(),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 })
                 .on_press(Message::PickerNavigate(path_clone));
@@ -2228,9 +2761,7 @@ fn file_finder_overlay<'a>(
 
     let mut list = Column::new().spacing(0).padding(Padding::from([6, 8]));
     if files.is_empty() {
-        list = list.push(
-            container(text("No matches").color(pal.subtle).size(13)).padding(14),
-        );
+        list = list.push(container(text("No matches").color(pal.subtle).size(13)).padding(14));
     } else {
         for (i, (p, rel, _)) in files.into_iter().enumerate().take(80) {
             let is_sel = i == selected;
@@ -2260,7 +2791,10 @@ fn file_finder_overlay<'a>(
                         _ => None,
                     },
                     text_color: pal.fg,
-                    border: Border { radius: 6.0.into(), ..Default::default() },
+                    border: Border {
+                        radius: 6.0.into(),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 })
                 .on_press(Message::Open(path_clone));
@@ -2272,7 +2806,7 @@ fn file_finder_overlay<'a>(
         .on_scroll(Message::OverlayScrolled)
         .height(Length::Fill)
         .direction(slim_scroll_direction())
-            .style(move |_, status| sleek_scrollable_style(status, pal, false));
+        .style(move |_, status| sleek_scrollable_style(status, pal, false));
 
     let divider = container(Space::new().height(1.0))
         .width(Length::Fill)
@@ -2309,8 +2843,7 @@ fn command_overlay<'a>(
 
     let mut list = Column::new().spacing(0).padding(Padding::from([6, 8]));
     if cmds.is_empty() {
-        list = list
-            .push(container(text("No commands").color(pal.subtle).size(13)).padding(14));
+        list = list.push(container(text("No commands").color(pal.subtle).size(13)).padding(14));
     } else {
         for (i, (label, msg, _)) in cmds.into_iter().enumerate() {
             let is_sel = i == selected;
@@ -2325,7 +2858,10 @@ fn command_overlay<'a>(
                         _ => None,
                     },
                     text_color: pal.fg,
-                    border: Border { radius: 6.0.into(), ..Default::default() },
+                    border: Border {
+                        radius: 6.0.into(),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 })
                 .on_press(msg);
@@ -2338,7 +2874,7 @@ fn command_overlay<'a>(
         .on_scroll(Message::OverlayScrolled)
         .height(Length::Fill)
         .direction(slim_scroll_direction())
-            .style(move |_, status| sleek_scrollable_style(status, pal, false));
+        .style(move |_, status| sleek_scrollable_style(status, pal, false));
 
     let divider = container(Space::new().height(1.0))
         .width(Length::Fill)
@@ -2379,26 +2915,34 @@ fn theme_overlay<'a>(
         let is_sel = i == selected;
         let is_current = t.matches_current(&current);
         let swatch_pal = t.palette();
-        let swatch = container(Space::new().width(Length::Fixed(14.0)).height(Length::Fixed(14.0)))
-            .style(move |_| container::Style {
-                background: Some(swatch_pal.accent.into()),
-                border: Border {
-                    color: swatch_pal.rule,
-                    width: 1.0,
-                    radius: 4.0.into(),
-                },
-                ..Default::default()
-            });
-        let bg_swatch = container(Space::new().width(Length::Fixed(14.0)).height(Length::Fixed(14.0)))
-            .style(move |_| container::Style {
-                background: Some(swatch_pal.bg.into()),
-                border: Border {
-                    color: swatch_pal.rule,
-                    width: 1.0,
-                    radius: 4.0.into(),
-                },
-                ..Default::default()
-            });
+        let swatch = container(
+            Space::new()
+                .width(Length::Fixed(14.0))
+                .height(Length::Fixed(14.0)),
+        )
+        .style(move |_| container::Style {
+            background: Some(swatch_pal.accent.into()),
+            border: Border {
+                color: swatch_pal.rule,
+                width: 1.0,
+                radius: 4.0.into(),
+            },
+            ..Default::default()
+        });
+        let bg_swatch = container(
+            Space::new()
+                .width(Length::Fixed(14.0))
+                .height(Length::Fixed(14.0)),
+        )
+        .style(move |_| container::Style {
+            background: Some(swatch_pal.bg.into()),
+            border: Border {
+                color: swatch_pal.rule,
+                width: 1.0,
+                radius: 4.0.into(),
+            },
+            ..Default::default()
+        });
         let label = t.label().to_string();
         let msg = t.message();
         let marker: Element<'a, Message> = if is_current {
@@ -2427,7 +2971,10 @@ fn theme_overlay<'a>(
                 _ => None,
             },
             text_color: pal.fg,
-            border: Border { radius: 6.0.into(), ..Default::default() },
+            border: Border {
+                radius: 6.0.into(),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .on_press(msg);
@@ -2439,7 +2986,7 @@ fn theme_overlay<'a>(
         .on_scroll(Message::OverlayScrolled)
         .height(Length::Fill)
         .direction(slim_scroll_direction())
-            .style(move |_, status| sleek_scrollable_style(status, pal, false));
+        .style(move |_, status| sleek_scrollable_style(status, pal, false));
 
     let divider = container(Space::new().height(1.0))
         .width(Length::Fill)
@@ -2514,20 +3061,28 @@ fn sleek_scrollable_style(
     let scroller_color = match status {
         scrollable::Status::Dragged { .. } => pal.scroller_hover,
         scrollable::Status::Hovered {
-            is_vertical_scrollbar_hovered: true, ..
+            is_vertical_scrollbar_hovered: true,
+            ..
         }
         | scrollable::Status::Hovered {
-            is_horizontal_scrollbar_hovered: true, ..
+            is_horizontal_scrollbar_hovered: true,
+            ..
         } => pal.scroller_hover,
         _ if recently_scrolled => pal.scroller_hover,
         _ => Color::TRANSPARENT,
     };
     let rail = scrollable::Rail {
         background: None,
-        border: Border { radius: 8.0.into(), ..Default::default() },
+        border: Border {
+            radius: 8.0.into(),
+            ..Default::default()
+        },
         scroller: scrollable::Scroller {
             background: Background::Color(scroller_color),
-            border: Border { radius: 8.0.into(), ..Default::default() },
+            border: Border {
+                radius: 8.0.into(),
+                ..Default::default()
+            },
         },
     };
     scrollable::Style {
