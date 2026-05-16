@@ -861,10 +861,9 @@ fn render_diagram<'a>(
             let zoom_btn = mouse_area(zoom_icon)
                 .interaction(iced::mouse::Interaction::Pointer)
                 .on_press(Message::DiagramZoom(hash));
-            let source_owned = source.to_string();
             let copy_btn = mouse_area(copy_icon)
                 .interaction(iced::mouse::Interaction::Pointer)
-                .on_press(Message::CopyDiagramSource(source_owned));
+                .on_press(Message::CopyDiagramSource(hash));
             let overlay = container(
                 row![zoom_btn, copy_btn].spacing(6),
             )

@@ -201,6 +201,7 @@ impl ParseState {
                 match lang.as_deref() {
                     Some("mermaid") => {
                         let mut h = DefaultHasher::new();
+                        0u8.hash(&mut h);
                         code.hash(&mut h);
                         self.push_block(Block::Diagram {
                             kind: DiagramKind::Mermaid,
@@ -210,6 +211,7 @@ impl ParseState {
                     }
                     Some("dot") | Some("graphviz") => {
                         let mut h = DefaultHasher::new();
+                        1u8.hash(&mut h);
                         code.hash(&mut h);
                         self.push_block(Block::Diagram {
                             kind: DiagramKind::Dot,

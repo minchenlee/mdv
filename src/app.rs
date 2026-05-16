@@ -189,7 +189,7 @@ pub enum Message {
     /// `Ready` SVG bytes by content-hash and opens [`Overlay::ImageZoom`].
     DiagramZoom(u64),
     /// Copy a diagram's raw source to the system clipboard.
-    CopyDiagramSource(String),
+    CopyDiagramSource(u64),
     /// Result of an async diagram render dispatched by `prime_diagram_cache`.
     /// `theme_id` is the snapshot at dispatch time — stale results are dropped.
     DiagramRendered {
@@ -262,9 +262,11 @@ pub struct App {
     /// so the diagram cache (keyed on `(hash, theme_id)`) is invalidated for
     /// the new palette automatically.
     pub diagram_theme_id: u32,
-    /// SVG bytes of the diagram currently shown in the zoom overlay. `None`
-    /// when the overlay is showing a normal raster/svg image instead.
-    pub zoom_diagram: Option<std::sync::Arc<Vec<u8>>>,
+    /// Pre-built svg::Handle of the diagram currently shown in the zoom
+    /// overlay. `None` when the overlay is showing a normal raster/svg
+    /// image instead. Stored as Handle (not bytes) so view passes can
+    /// clone cheaply without re-parsing.
+    pub zoom_diagram: Option<iced::widget::svg::Handle>,
 }
 
 #[derive(Debug, Clone)]
@@ -635,8 +637,18 @@ impl App {
         }
     }
 
-    fn refresh_diagram_theme_id(&mut self) {
-        self.diagram_theme_id = crate::diagram::theme_id(&self.palette);
+    /// Recompute `diagram_theme_id` from current palette. Returns true iff
+    /// the id changed (i.e. palette actually differs). Callers can skip
+    /// `prime_diagram_cache` when this returns false — palette unchanged
+    /// means existing cache entries are still valid.
+    fn refresh_diagram_theme_id(&mut self) -> bool {
+        let new_id = crate::diagram::theme_id(&self.palette);
+        if new_id == self.diagram_theme_id {
+            false
+        } else {
+            self.diagram_theme_id = new_id;
+            true
+        }
     }
 
     fn rebuild_matches(&mut self) {
@@ -1491,17 +1503,25 @@ impl App {
                 if let Some(t) = typo {
                     self.typography = t;
                 }
-                self.refresh_diagram_theme_id();
-                let prime = self.prime_diagram_cache();
-                Task::batch([self.show_toast(label), prime])
+                let changed = self.refresh_diagram_theme_id();
+                let toast = self.show_toast(label);
+                if changed {
+                    Task::batch([toast, self.prime_diagram_cache()])
+                } else {
+                    toast
+                }
             }
             Message::SetTheme(t) => {
                 self.theme_preset = t;
                 self.palette = theme::palette_for(t);
                 self.theme_id = theme::ThemeId::Preset(t);
-                self.refresh_diagram_theme_id();
-                let prime = self.prime_diagram_cache();
-                Task::batch([self.show_toast(t.label().to_string()), prime])
+                let changed = self.refresh_diagram_theme_id();
+                let toast = self.show_toast(t.label().to_string());
+                if changed {
+                    Task::batch([toast, self.prime_diagram_cache()])
+                } else {
+                    toast
+                }
             }
             Message::SetCustomTheme(slug) => {
                 if let Some(t) = self.custom_themes.iter().find(|t| t.slug == slug) {
@@ -1509,9 +1529,13 @@ impl App {
                     self.typography = t.typography;
                     self.theme_id = theme::ThemeId::Custom(slug.clone());
                     let label = t.name.clone();
-                    self.refresh_diagram_theme_id();
-                    let prime = self.prime_diagram_cache();
-                    Task::batch([self.show_toast(label), prime])
+                    let changed = self.refresh_diagram_theme_id();
+                    let toast = self.show_toast(label);
+                    if changed {
+                        Task::batch([toast, self.prime_diagram_cache()])
+                    } else {
+                        toast
+                    }
                 } else {
                     Task::none()
                 }
@@ -1532,15 +1556,16 @@ impl App {
                 if !errs.is_empty() {
                     self.error = Some(format!("theme load: {}", errs.join("; ")));
                 }
-                self.refresh_diagram_theme_id();
-                let prime = self.prime_diagram_cache();
-                Task::batch([
-                    self.show_toast(format!(
-                        "{n} custom theme{}",
-                        if n == 1 { "" } else { "s" }
-                    )),
-                    prime,
-                ])
+                let changed = self.refresh_diagram_theme_id();
+                let toast = self.show_toast(format!(
+                    "{n} custom theme{}",
+                    if n == 1 { "" } else { "s" }
+                ));
+                if changed {
+                    Task::batch([toast, self.prime_diagram_cache()])
+                } else {
+                    toast
+                }
             }
             Message::ThemeFilesChanged => {
                 let mut errs = Vec::new();
@@ -1574,10 +1599,8 @@ impl App {
                 } else {
                     Task::none()
                 };
-                if active_changed {
-                    self.refresh_diagram_theme_id();
-                    let prime = self.prime_diagram_cache();
-                    Task::batch([toast, prime])
+                if active_changed && self.refresh_diagram_theme_id() {
+                    Task::batch([toast, self.prime_diagram_cache()])
                 } else {
                     toast
                 }
@@ -1717,14 +1740,14 @@ impl App {
                 // because cache may hold a stale entry under an old theme_id;
                 // we want the one matching the current palette.
                 let key = (hash, self.diagram_theme_id);
-                let bytes = match self.diagram_cache.peek(&key) {
-                    Some(crate::diagram::DiagramState::Ready { source_bytes, .. }) => {
-                        Some(source_bytes.clone())
+                let handle = match self.diagram_cache.peek(&key) {
+                    Some(crate::diagram::DiagramState::Ready { handle, .. }) => {
+                        Some(handle.clone())
                     }
                     _ => None,
                 };
-                if let Some(b) = bytes {
-                    self.zoom_diagram = Some(b);
+                if let Some(h) = handle {
+                    self.zoom_diagram = Some(h);
                     self.zoom_url = None;
                     self.overlay = Overlay::ImageZoom;
                     self.restore_body_scroll()
@@ -1732,9 +1755,20 @@ impl App {
                     Task::none()
                 }
             }
-            Message::CopyDiagramSource(s) => {
-                let toast = self.show_toast("Copied".into());
-                Task::batch([iced::clipboard::write::<Message>(s), toast])
+            Message::CopyDiagramSource(hash) => {
+                let src = self.ast.iter().find_map(|(_, b)| match b {
+                    Block::Diagram { hash: h, source, .. } if *h == hash => {
+                        Some(source.clone())
+                    }
+                    _ => None,
+                });
+                match src {
+                    Some(s) => {
+                        let toast = self.show_toast("Copied".into());
+                        Task::batch([iced::clipboard::write::<Message>(s), toast])
+                    }
+                    None => Task::none(),
+                }
             }
             Message::DiagramRendered { hash, theme_id, result } => {
                 // Drop stale results — theme changed mid-render, or AST
@@ -2284,7 +2318,7 @@ fn toast_overlay<'a>(text: &str, pal: Palette) -> Element<'a, Message> {
 
 fn image_zoom_overlay<'a>(
     url: Option<&'a str>,
-    diagram: Option<&std::sync::Arc<Vec<u8>>>,
+    diagram: Option<&iced::widget::svg::Handle>,
     cache: &HashMap<String, ImageState>,
     pal: Palette,
 ) -> Element<'a, Message> {
@@ -2299,9 +2333,8 @@ fn image_zoom_overlay<'a>(
             .into()
     };
     // Diagram overrides image source when set — DiagramZoom clears zoom_url.
-    if let Some(bytes) = diagram {
-        let handle = iced::widget::svg::Handle::from_memory((**bytes).clone());
-        let svg_el: Element<'a, Message> = iced::widget::svg(handle)
+    if let Some(handle) = diagram {
+        let svg_el: Element<'a, Message> = iced::widget::svg(handle.clone())
             .width(Length::Fill)
             .height(Length::Fill)
             .into();
