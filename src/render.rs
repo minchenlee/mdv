@@ -831,24 +831,8 @@ fn render_diagram<'a>(
                 .interaction(iced::mouse::Interaction::Pointer)
                 .on_press(Message::DiagramZoom(hash));
 
-            // Hover overlay — zoom + copy. Mirrors the CodeBlock copy-button
-            // styling (background = code_bg, border = code_border). The
-            // CodeBlock copy button is always visible, so for parity ours is
-            // too; per-hover visibility would require a hover-tracking state
-            // T4 owns.
-            let zoom_icon = container(
-                crate::icon::glyph(crate::icon::ic::ZOOM, 13.0, pal_c.muted),
-            )
-            .padding(Padding::from([4, 6]))
-            .style(move |_| container::Style {
-                background: Some(pal_c.code_bg.into()),
-                border: iced::Border {
-                    color: pal_c.code_border,
-                    width: 1.0,
-                    radius: 6.0.into(),
-                },
-                ..Default::default()
-            });
+            // Copy-source button only — whole-diagram click already opens
+            // the zoom modal. Matches the CodeBlock copy-button styling.
             let copy_icon = container(
                 crate::icon::glyph(crate::icon::ic::COPY, 13.0, pal_c.muted),
             )
@@ -862,18 +846,13 @@ fn render_diagram<'a>(
                 },
                 ..Default::default()
             });
-            let zoom_btn = mouse_area(zoom_icon)
-                .interaction(iced::mouse::Interaction::Pointer)
-                .on_press(Message::DiagramZoom(hash));
             let copy_btn = mouse_area(copy_icon)
                 .interaction(iced::mouse::Interaction::Pointer)
                 .on_press(Message::CopyDiagramSource(hash));
-            let overlay = container(
-                row![zoom_btn, copy_btn].spacing(6),
-            )
-            .padding(Padding::from([6, 8]))
-            .align_x(iced::alignment::Horizontal::Right)
-            .width(Length::Fill);
+            let overlay = container(copy_btn)
+                .padding(Padding::from([6, 8]))
+                .align_x(iced::alignment::Horizontal::Right)
+                .width(Length::Fill);
             stack![clickable, overlay].into()
         }
         Some(DiagramState::Err(msg)) => {

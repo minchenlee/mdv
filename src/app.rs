@@ -7,7 +7,7 @@ use crate::search::{self, MatchPos};
 use crate::theme::{self, Palette, ThemeMode, ThemePreset, Typography};
 use crate::tree::{self, Node};
 use iced::widget::{
-    button, column, container, mouse_area, row as irow, scrollable, text, text_input, Column, Space,
+    button, column, container, mouse_area, row as irow, scrollable, stack, text, text_input, Column, Space,
 };
 use iced::{Background, Border, Color, Element, Length, Padding, Task, Theme};
 use std::collections::{HashMap, HashSet};
@@ -2336,39 +2336,27 @@ fn image_zoom_overlay<'a>(
     // Diagram overrides image source when set — DiagramZoom clears zoom_url.
     // Reuses image::viewer for scroll-zoom + drag-pan + escape-close parity
     // with normal images.
-    if let Some(handle) = diagram {
-        let inner = mk_viewer(handle.clone());
-        let scrim = container(
-            container(inner)
-                .padding(24)
-                .center_x(Length::Fill)
-                .center_y(Length::Fill),
-        )
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .style(move |_| container::Style {
-            background: Some(Color { a: 0.85, ..pal.bg }.into()),
-            ..Default::default()
-        });
-        return mouse_area(scrim).on_press(Message::CloseOverlay).into();
-    }
-    let inner: Element<'a, Message> = match url {
-        Some(u) => match cache.get(u) {
-            Some(ImageState::Loaded(h)) => mk_viewer(h.clone()),
-            Some(ImageState::LoadedSvg {
-                raster: Some(h), ..
-            }) => mk_viewer(h.clone()),
-            Some(ImageState::LoadedSvg { raster: None, .. }) | Some(ImageState::Loading) => {
-                text("rendering…").color(pal.muted).into()
-            }
-            Some(ImageState::Failed) => text("image unavailable").color(pal.muted).into(),
-            None => {
-                // Local raster path (cache only stores svg/remote). Use direct viewer.
-                let p = std::path::PathBuf::from(u);
-                mk_viewer(iced::widget::image::Handle::from_path(p))
-            }
-        },
-        None => text("").into(),
+    let inner: Element<'a, Message> = if let Some(handle) = diagram {
+        mk_viewer(handle.clone())
+    } else {
+        match url {
+            Some(u) => match cache.get(u) {
+                Some(ImageState::Loaded(h)) => mk_viewer(h.clone()),
+                Some(ImageState::LoadedSvg {
+                    raster: Some(h), ..
+                }) => mk_viewer(h.clone()),
+                Some(ImageState::LoadedSvg { raster: None, .. }) | Some(ImageState::Loading) => {
+                    text("rendering…").color(pal.muted).into()
+                }
+                Some(ImageState::Failed) => text("image unavailable").color(pal.muted).into(),
+                None => {
+                    // Local raster path (cache only stores svg/remote). Use direct viewer.
+                    let p = std::path::PathBuf::from(u);
+                    mk_viewer(iced::widget::image::Handle::from_path(p))
+                }
+            },
+            None => text("").into(),
+        }
     };
     let scrim = container(
         container(inner)
@@ -2382,7 +2370,35 @@ fn image_zoom_overlay<'a>(
         background: Some(Color { a: 0.85, ..pal.bg }.into()),
         ..Default::default()
     });
-    mouse_area(scrim).on_press(Message::CloseOverlay).into()
+    // Click background scrim → close. Pointer cursor would mislead since
+    // most of the surface is the viewer (which handles its own drags).
+    let scrim_click = mouse_area(scrim).on_press(Message::CloseOverlay);
+    // Top-right close button. Sits on its own mouse_area so a click on the
+    // X always fires CloseOverlay (independent of the scrim mouse_area
+    // beneath it in the stack).
+    let close_btn_inner = container(
+        crate::icon::glyph(crate::icon::ic::X, 16.0, pal.fg),
+    )
+    .padding(Padding::from([6, 8]))
+    .style(move |_| container::Style {
+        background: Some(Color { a: 0.75, ..pal.code_bg }.into()),
+        border: iced::Border {
+            color: pal.code_border,
+            width: 1.0,
+            radius: 8.0.into(),
+        },
+        ..Default::default()
+    });
+    let close_btn = mouse_area(close_btn_inner)
+        .interaction(iced::mouse::Interaction::Pointer)
+        .on_press(Message::CloseOverlay);
+    let close_overlay = container(close_btn)
+        .padding(Padding::from([14, 16]))
+        .align_x(iced::alignment::Horizontal::Right)
+        .align_y(iced::alignment::Vertical::Top)
+        .width(Length::Fill)
+        .height(Length::Fill);
+    stack![scrim_click, close_overlay].into()
 }
 
 fn inline_text_bytes(items: &[Inline]) -> usize {
