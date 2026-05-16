@@ -10,7 +10,7 @@ pub struct Node {
     pub children: Vec<Node>,
 }
 
-pub fn build(root: &Path) -> Node {
+pub fn build(root: &Path, show_hidden: bool) -> Node {
     let name = root
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
@@ -21,12 +21,12 @@ pub fn build(root: &Path) -> Node {
         is_dir: true,
         children: Vec::new(),
     };
-    fill(&mut node, 0, 12);
+    fill(&mut node, 0, 12, show_hidden);
     prune(&mut node);
     node
 }
 
-fn fill(node: &mut Node, depth: usize, max_depth: usize) {
+fn fill(node: &mut Node, depth: usize, max_depth: usize, show_hidden: bool) {
     if depth >= max_depth {
         return;
     }
@@ -37,9 +37,12 @@ fn fill(node: &mut Node, depth: usize, max_depth: usize) {
     let mut files: Vec<Node> = Vec::new();
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
-        // Skip noisy build/vcs caches but allow other dot-dirs (.claude,
-        // .vscode, .github, etc.) so users can browse their config.
+        // Always skip massive build/vcs caches.
         if name == "node_modules" || name == "target" || name == ".git" {
+            continue;
+        }
+        // Other dot-entries gated on the toggle.
+        if !show_hidden && name.starts_with('.') {
             continue;
         }
         let p = e.path();
@@ -50,7 +53,7 @@ fn fill(node: &mut Node, depth: usize, max_depth: usize) {
                 is_dir: true,
                 children: Vec::new(),
             };
-            fill(&mut child, depth + 1, max_depth);
+            fill(&mut child, depth + 1, max_depth, show_hidden);
             dirs.push(child);
         } else if is_markdown_path(&p) {
             files.push(Node {

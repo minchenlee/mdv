@@ -15,6 +15,7 @@ pub struct Picker {
     pub selected: usize,
     pub error: Option<String>,
     pub mode: PickerMode,
+    pub show_hidden: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,7 +27,7 @@ pub enum PickerMode {
 }
 
 impl Picker {
-    pub fn new(start: Option<PathBuf>, mode: PickerMode) -> Self {
+    pub fn new(start: Option<PathBuf>, mode: PickerMode, show_hidden: bool) -> Self {
         let cwd = start
             .or_else(|| dirs::home_dir())
             .or_else(|| std::env::current_dir().ok())
@@ -37,6 +38,7 @@ impl Picker {
             selected: 0,
             error: None,
             mode,
+            show_hidden,
         };
         p.refresh();
         p
@@ -53,9 +55,12 @@ impl Picker {
                     .filter_map(|e| {
                         let path = e.path();
                         let name = e.file_name().to_string_lossy().into_owned();
-                        // Skip only .git — other dot-entries (.claude,
-                        // .vscode, .github, etc.) remain browsable.
+                        // Always skip .git (huge, never wanted).
                         if name == ".git" {
+                            return None;
+                        }
+                        // Other dot-entries gated by toggle.
+                        if !self.show_hidden && name.starts_with('.') {
                             return None;
                         }
                         let is_dir = path.is_dir();
@@ -143,7 +148,12 @@ pub fn is_markdown_path(p: &Path) -> bool {
 }
 
 /// Walk a workspace folder gathering all markdown files (limited depth + count).
-pub fn walk_markdown(root: &Path, max_depth: usize, max_files: usize) -> Vec<PathBuf> {
+pub fn walk_markdown(
+    root: &Path,
+    max_depth: usize,
+    max_files: usize,
+    show_hidden: bool,
+) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack: Vec<(PathBuf, usize)> = vec![(root.to_path_buf(), 0)];
     while let Some((dir, depth)) = stack.pop() {
@@ -157,6 +167,9 @@ pub fn walk_markdown(root: &Path, max_depth: usize, max_files: usize) -> Vec<Pat
         for e in rd.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
             if name == ".git" || name == "node_modules" || name == "target" {
+                continue;
+            }
+            if !show_hidden && name.starts_with('.') {
                 continue;
             }
             let p = e.path();

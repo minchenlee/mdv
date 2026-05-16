@@ -133,6 +133,8 @@ pub enum Message {
     ReloadThemes,
     ThemeFilesChanged,
     ToggleSidebar,
+    /// Toggle visibility of dot-prefixed entries in tree + picker.
+    ToggleHidden,
     TreeToggle(PathBuf),
     TreeMove(isize),
     TreeActivate,
@@ -216,6 +218,10 @@ pub struct App {
     pub workspace: Option<PathBuf>,
     pub workspace_files: Vec<PathBuf>,
     pub workspace_tree: Option<Node>,
+    /// Whether dot-prefixed dirs/files appear in the tree, picker, and
+    /// workspace_files walk. Toggled by `Message::ToggleHidden` (⌘⇧.).
+    /// `.git`/node_modules/target are always filtered regardless.
+    pub show_hidden: bool,
     pub expanded: HashSet<PathBuf>,
     pub sidebar_open: bool,
     pub tree_cursor: usize,
@@ -296,6 +302,7 @@ impl Default for App {
             workspace: None,
             workspace_files: Vec::new(),
             workspace_tree: None,
+            show_hidden: false,
             expanded: HashSet::new(),
             sidebar_open: false,
             tree_cursor: 0,
@@ -672,7 +679,7 @@ impl App {
                     .as_ref()
                     .and_then(|p| p.parent().map(|x| x.to_path_buf()))
             });
-            self.picker = Some(Picker::new(start, PickerMode::Folder));
+            self.picker = Some(Picker::new(start, PickerMode::Folder, self.show_hidden));
         } else {
             self.picker = None;
         }
@@ -783,6 +790,7 @@ impl App {
             ("Open Folder…  ⌘O", Message::OpenFolderPicker),
             ("Find File in Workspace…  ⌘P", Message::OpenFileFinder),
             ("Toggle Sidebar  ⌘B", Message::ToggleSidebar),
+            ("Toggle Hidden Files  ⌘⇧.", Message::ToggleHidden),
             ("Find in Document  ⌘F", Message::ToggleSearch),
             ("Toggle Raw/Rendered  ⌘E", Message::ToggleViewMode),
             ("Toggle Mindmap  ⌘M", Message::ToggleMindmap),
@@ -862,8 +870,8 @@ impl App {
         match msg {
             Message::Open(p) => Task::perform(load_file(p), Message::FileLoaded),
             Message::OpenWorkspace(p) => {
-                self.workspace_files = picker::walk_markdown(&p, 8, 5000);
-                self.workspace_tree = Some(tree::build(&p));
+                self.workspace_files = picker::walk_markdown(&p, 8, 5000, self.show_hidden);
+                self.workspace_tree = Some(tree::build(&p, self.show_hidden));
                 self.expanded.clear();
                 if let Some(t) = &self.workspace_tree {
                     self.expanded.insert(t.path.clone());
@@ -1618,6 +1626,27 @@ impl App {
                 self.sidebar_open = !self.sidebar_open;
                 self.restore_body_scroll()
             }
+            Message::ToggleHidden => {
+                self.show_hidden = !self.show_hidden;
+                // Rebuild tree + workspace_files with the new filter. Keep
+                // expanded paths; any node that disappears just won't show.
+                if let Some(ws) = self.workspace.clone() {
+                    self.workspace_files =
+                        picker::walk_markdown(&ws, 8, 5000, self.show_hidden);
+                    self.workspace_tree = Some(tree::build(&ws, self.show_hidden));
+                }
+                // If a picker is open, rebuild its view too.
+                if let Some(p) = self.picker.as_mut() {
+                    p.show_hidden = self.show_hidden;
+                    p.refresh();
+                }
+                let label = if self.show_hidden {
+                    "Hidden files: shown".to_string()
+                } else {
+                    "Hidden files: hidden".to_string()
+                };
+                self.show_toast(label)
+            }
             Message::TreeToggle(p) => {
                 if !self.expanded.remove(&p) {
                     self.expanded.insert(p);
@@ -1910,6 +1939,10 @@ impl App {
                         "k" if cmd && !editing => return Message::FoldChordStart,
                         "o" if cmd => return Message::OpenFolderPicker,
                         "b" if cmd => return Message::ToggleSidebar,
+                        // ⌘⇧. — toggle hidden files. Match both '.' and '>'
+                        // since shift+. produces '>' on many layouts.
+                        "." if cmd && mods.shift() => return Message::ToggleHidden,
+                        ">" if cmd => return Message::ToggleHidden,
                         "f" if cmd => return Message::ToggleSearch,
                         "t" if cmd => return Message::ToggleTheme,
                         "e" if cmd => return Message::ToggleViewMode,
